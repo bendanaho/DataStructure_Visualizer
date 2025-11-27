@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QFormLayout,
-    QLabel,
+    QGridLayout,
     QLineEdit,
     QPushButton,
     QSpinBox,
@@ -39,60 +39,69 @@ class LinkedListController(QWidget):
 
     def _create_panel(self):
         container = QWidget()
-        layout = QVBoxLayout(container)
+        layout = QGridLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(12)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 1)
 
         # Create From List
         create_btn = QPushButton("Create From List")
         create_btn.clicked.connect(self._on_create)
-        layout.addWidget(create_btn)
+        create_group = self._single_button_group("Create", create_btn)
+        layout.addWidget(create_group, 0, 0)
 
         # Append Tail
         append_btn = QPushButton("Append Tail")
         append_btn.clicked.connect(self._on_append_tail)
-        layout.addWidget(append_btn)
+        append_group = self._single_button_group("Append Tail", append_btn)
+        layout.addWidget(append_group, 0, 1)
 
-        # Insert controls wrapped in a group box
+        # Insert controls
         insert_group = QGroupBox("Insert At")
         insert_group.setStyleSheet("QGroupBox { color: white; }")
         insert_layout = QFormLayout()
         insert_layout.setContentsMargins(12, 8, 12, 12)
         insert_layout.setSpacing(6)
-
         insert_layout.addRow("Index:", self.insert_index_spin)
         insert_layout.addRow("Value:", self.insert_value_edit)
-
         insert_btn = QPushButton("Insert")
         insert_btn.clicked.connect(self._on_insert)
         insert_layout.addRow(insert_btn)
-
         insert_group.setLayout(insert_layout)
-        layout.addWidget(insert_group)
+        layout.addWidget(insert_group, 1, 0)
 
-        # Delete controls wrapped in a group box
+        # Delete controls
         delete_group = QGroupBox("Delete At")
         delete_group.setStyleSheet("QGroupBox { color: white; }")
         delete_layout = QFormLayout()
         delete_layout.setContentsMargins(12, 8, 12, 12)
         delete_layout.setSpacing(6)
-
         delete_layout.addRow("Index:", self.delete_index_spin)
-
         delete_btn = QPushButton("Delete")
         delete_btn.clicked.connect(self._on_delete)
         delete_layout.addRow(delete_btn)
-
         delete_group.setLayout(delete_layout)
-        layout.addWidget(delete_group)
+        layout.addWidget(delete_group, 1, 1)
 
-        layout.addStretch(1)
+        layout.setRowStretch(2, 1)
 
         self.create_btn = create_btn
         self.append_btn = append_btn
         self.insert_btn = insert_btn
         self.delete_btn = delete_btn
         return container
+
+    @staticmethod
+    def _single_button_group(title, button):
+        group = QGroupBox(title)
+        group.setStyleSheet("QGroupBox { color: white; }")
+        vlayout = QVBoxLayout(group)
+        vlayout.setContentsMargins(12, 10, 12, 12)
+        vlayout.setSpacing(6)
+        vlayout.addWidget(button)
+        return group
 
     def _build_inputs(self):
         self.insert_index_spin = QSpinBox()

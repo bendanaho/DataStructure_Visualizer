@@ -184,13 +184,39 @@ class LinkedListView(BaseStructureView):
         self._track_animation(seq, finalizer=_finalizer)
 
     def update_values(self, nodes):
-        """No animation: update label texts directly."""
+        """更新节点文字，如果值发生变化则触发闪烁提示。"""
         self.order = [node["id"] for node in nodes]
+        changed_items = []
+
         for info in nodes:
             node_item = self.node_items.get(info["id"])
-            if node_item:
-                node_item.set_value(str(info["value"]))
-        self._refresh_connectivity()
+            if not node_item:
+                continue
+
+            new_value = str(info["value"])
+            value_changed = node_item.value() != new_value
+            node_item.set_value(new_value)
+
+            if value_changed:
+                changed_items.append(node_item)
+
+        if not changed_items:
+            self._refresh_connectivity()
+            return
+
+        flashes = [
+            self.anim.flash_brush(
+                setter=item.setFillColor,
+                start_color=item.fillColor,
+                end_color=QColor("#4dd0e1"),
+                duration=360,
+                loops=2,
+            )
+            for item in changed_items
+        ]
+
+        group = self.anim.parallel(*flashes)
+        self._track_animation(group, finalizer=self._refresh_connectivity)
 
     # ---------- Helpers ----------
 
@@ -902,6 +928,9 @@ class LinkedListNodeItem(QGraphicsObject):
         painter.setFont(font)
         painter.setPen(Qt.white)
         painter.drawText(self._rect(), Qt.AlignCenter, self._value)
+
+    def value(self):
+        return self._value
 
     def set_value(self, value: str):
         self._value = str(value)

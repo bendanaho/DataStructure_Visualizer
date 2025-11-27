@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 
 from core.global_ctrl import GlobalController
 from widgets.graphics_view import CustomGraphicsView
+from arrayviz.arr_ctrl import ArrayController
 from linklist.sl_ctrl import LinkedListController
 from stack.st_ctrl import StackController
 
@@ -115,9 +116,11 @@ class MainWindow(QMainWindow):
     def _register_controllers(self):
         linked_list = LinkedListController(self.global_ctrl)
         stack = StackController(self.global_ctrl)
+        array = ArrayController(self.global_ctrl)
 
         self._add_controller("Linked List", linked_list)
         self._add_controller("Stack", stack)
+        self._add_controller("Array", array)
 
     def _add_controller(self, name, controller):
         panel = controller.build_panel()
