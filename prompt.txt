@@ -1,0 +1,111 @@
+将涉及修改的函数或类的完整代码发给我，并指明函数或类的名字以及来自那个文件，不涉及修改的部分不要发。
+
+下面是我的文件目录
+visualizer/
+ ├─ main.py                    # 入口
+ ├─ README.md
+ ├─ core/                      # 核心模块
+ │   ├─ __init__.py
+ │   ├─ global_ctrl.py         # 全局控制器
+ │   ├─ base_view.py           # 视图基类、通用图形组件
+ │   └─ animation.py           # 动画辅助类（提取公共代码）
+ ├─ widgets/                   # 自定义控件
+ │   ├─ __init__.py
+ │   └─ graphics_view.py       # CustomGraphicsView
+ ├─ linklist/
+ │   ├─ __init__.py
+ │   ├─ sl_model.py
+ │   ├─ sl_view.py
+ │   └─ sl_ctrl.py
+ └─ stack/
+ │   ├─ __init__.py
+ │   ├─ st_model.py
+ │   ├─ st_view.py
+ │   └─ st_ctrl.py
+ └─ resources/                 # 资源文件
+     └─ styles.qss
+
+
+
+
+
+
+
+
+
+
+
+
+--------------------开始时使用的prompt--------------------------------------------
+
+目标：基于 PyQt5 的轻量级数据结构可视化器（MVC）
+技术约束：
+  1. Python 3.9+，PyQt5，如果必要可以使用第三方库。
+  2. 数据结构的属性和方法手动实现，不能使用类库和模板。
+  3. 所有动画时长默认 800 ms，可全局调速 0.5×–3×，动画流畅不卡顿。
+
+使用MVC模式 约定：
+  - model 只存纯数据（列表/字典），不含任何 Qt 对象；
+  - view 只负责把 model → QGraphicsItem，不修改数据；
+  - controller 捕获 UI 事件 → 调用 model → 触发 view 动画。
+
+目录结构（必须使用）：
+visualizer/
+ ├─ main.py                    # 入口
+ ├─ README.md
+ ├─ core/                      # 核心模块
+ │   ├─ __init__.py
+ │   ├─ global_ctrl.py         # 全局控制器
+ │   ├─ base_view.py           # 视图基类、通用图形组件
+ │   └─ animation.py           # 动画辅助类（提取公共代码）
+ ├─ widgets/                   # 自定义控件
+ │   ├─ __init__.py
+ │   └─ graphics_view.py       # CustomGraphicsView
+ ├─ linklist/
+ │   ├─ __init__.py
+ │   ├─ model.py
+ │   ├─ view.py
+ │   └─ ctrl.py
+ └─ stack/
+ │   ├─ __init__.py
+ │   ├─ model.py
+ │   ├─ view.py
+ │   └─ ctrl.py
+ └─ resources/                 # 资源文件
+     └─ styles.qss
+
+
+UI 布局（QMainWindow）：
+  +----------------------------------------------------------+
+  |  QHBoxLayout
+  |  +-- leftPanel (65 % width)
+  |  |   +-- top: QComboBox 选择数据结构
+  |  |   +-- mid: QGraphicsView 绘图区
+  |  |   +-- bottom: 操作按钮区（根据选中结构动态加载）
+  |  +-- rightPanel (35 % width)
+  |      +-- QTextEdit 自然语言/代码输入（占位，暂不绑定动作）
+  +----------------------------------------------------------+
+
+链表交互细则：
+  - 节点：圆角矩形 item，宽 80 高 40，文字居中。
+  - 箭头：二次贝塞尔曲线，箭头头部 20°、长度 15 px。
+  - 构建：按钮 “Create From List” → 弹出 QInputDialog 接收“1,2,3” → 动画逐节点插入。
+  - 插入：按钮 “Insert At” → QSpinBox 选 index → QLineEdit 选 value → 动画拆分两步（① 找到前驱 ② 改变 next ③ 新节点淡入）。动画期间其他按钮禁止操作。
+  - 删除：右键菜单 “Delete” 或按钮 “Delete At” → 动画三步（① 前驱 next 指向后件 ② 当前节点红色闪烁 ③ 淡出）。动画期间其他按钮禁止操作。
+  - 拖拽：左键按住节点即可拖拽，箭头实时重绘；拖拽期间屏蔽其他动画。
+  - 修改值：右键 “Edit Value” → QInputDialog → 节点文字瞬间替换（无动画）。
+
+栈交互细则：
+  - 视觉：栈纵向叠放，元素为 60×40 圆角矩形，最大可见 10 个，超出自动滚动。
+  - 入栈：按钮 “Push” → 输入值 → 新元素从右侧外飞入 400 ms → 落在栈顶。
+  - 出栈：按钮 “Pop” → 栈顶元素上移 300 ms → 水平飞出到右侧输出区 → 在输出区横向排成一排。
+  - 动画速度滑块：QSlider 0.5×–3×，实时生效。
+
+滚轮行为：
+  - 绘图区绑定 wheelEvent → 仅垂直平移场景，不放缩。
+  - Ctrl+滚轮才缩放，缩放因子 1.1。
+
+输出格式：
+  - 完整项目文件夹
+  - 入口文件 main.py 可直接 python main.py 运行
+  - 附带 README.md，写明动画调速入口和新增数据结构的插件步骤

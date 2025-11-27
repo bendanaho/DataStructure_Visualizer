@@ -1,0 +1,66 @@
+QMainWindow {
+    background-color: #1b1f2a;
+    color: #e8eef9;
+}
+
+QLabel {
+    color: #e8eef9;
+}
+
+QPushButton {
+    background-color: #2f80ed;
+    color: #ffffff;
+    border: 0;
+    padding: 6px 12px;
+    border-radius: 4px;
+}
+
+QPushButton:disabled {
+    background-color: #6b7280;
+    color: #111;
+}
+
+QLineEdit, QSpinBox, QTextEdit {
+    background-color: #11141d;
+    color: #f5f5f5;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+QComboBox {
+    background-color: #11141d;
+    color: #f5f5f5;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+QSlider::groove:horizontal {
+    background: #2c2f38;
+    height: 6px;
+    border-radius: 3px;
+}
+
+QSlider::handle:horizontal {
+    background: #2f80ed;
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    margin: -6px 0;
+}
+
+QTextEdit {
+    border-radius: 6px;
+}
+
+#structureSelectLabel {     /* Data Structure: */
+    font-size: 28px;
+    font-weight: 600;
+}
+
+#structureSelectCombo {     /* 下拉选择框 */
+    font-size: 30px;
+    padding: 6px 10px;
+}
+
