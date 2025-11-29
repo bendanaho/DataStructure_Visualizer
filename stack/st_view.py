@@ -242,7 +242,7 @@ class StackView(BaseStructureView):
         if not lines:
             text = "POP: —"
         else:
-            text = "POP:\n" + "\n".join(lines)
+            text = "POP:" + "\n".join(lines)
         self.output_text.setText(text)
         self._update_output_text_position()
         self._auto_scale_view()
@@ -445,8 +445,9 @@ class StackNodeItem(QGraphicsObject):
         super().__init__()
         self.node_id = node_id
         self._value = str(value)
-        self.fill_color = QColor("#3949ab")
-        self.stroke_color = QColor("#1a237e")
+        self.fill_color = QColor("#e9e9ef")
+        self.stroke_color = QColor("#4a4a52")
+        self.text_color = QColor("#1f1f24")
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 
     def boundingRect(self):
@@ -464,7 +465,7 @@ class StackNodeItem(QGraphicsObject):
         font = painter.font()
         font.setPointSize(14)
         painter.setFont(font)
-        painter.setPen(QColor("#ffffff"))
+        painter.setPen(self.text_color)
         painter.drawText(self._rect(), Qt.AlignCenter, self._value)
 
     def set_value(self, value):

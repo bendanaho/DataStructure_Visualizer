@@ -1,3 +1,5 @@
+import re
+
 from PyQt5.QtWidgets import (
     QFormLayout,
     QGridLayout,
@@ -35,6 +37,8 @@ class LinkedListController(QWidget):
         self.view.editRequested.connect(self._handle_edit_from_node)
         self.view.clearAllRequested.connect(self._on_clear_all_requested)
 
+        self._refresh_spins()
+
     # ---------- Panel UI ----------
 
     def _create_panel(self):
@@ -56,7 +60,7 @@ class LinkedListController(QWidget):
         append_btn = QPushButton("Append Tail")
         append_btn.clicked.connect(self._on_append_tail)
         append_group = self._single_button_group("Append Tail", append_btn)
-        layout.addWidget(append_group, 0, 1)
+        layout.addWidget(append_group, 1, 0)
 
         # Insert controls
         insert_group = QGroupBox("Insert At")
@@ -70,7 +74,21 @@ class LinkedListController(QWidget):
         insert_btn.clicked.connect(self._on_insert)
         insert_layout.addRow(insert_btn)
         insert_group.setLayout(insert_layout)
-        layout.addWidget(insert_group, 1, 0)
+        layout.addWidget(insert_group, 2, 0)
+
+        # Update controls（布局与 arr_ctrl 相同）
+        update_group = QGroupBox("Update")
+        update_group.setStyleSheet("QGroupBox { color: white; }")
+        update_layout = QFormLayout()
+        update_layout.setContentsMargins(12, 8, 12, 12)
+        update_layout.setSpacing(6)
+        update_layout.addRow("Index:", self.update_index_spin)
+        update_layout.addRow("Value:", self.update_value_edit)
+        update_btn = QPushButton("Update")
+        update_btn.clicked.connect(self._on_update_value)
+        update_layout.addRow(update_btn)
+        update_group.setLayout(update_layout)
+        layout.addWidget(update_group, 0, 1, 2, 1)
 
         # Delete controls
         delete_group = QGroupBox("Delete At")
@@ -83,13 +101,14 @@ class LinkedListController(QWidget):
         delete_btn.clicked.connect(self._on_delete)
         delete_layout.addRow(delete_btn)
         delete_group.setLayout(delete_layout)
-        layout.addWidget(delete_group, 1, 1)
+        layout.addWidget(delete_group, 2, 1)
 
-        layout.setRowStretch(2, 1)
+        layout.setRowStretch(3, 1)
 
         self.create_btn = create_btn
         self.append_btn = append_btn
         self.insert_btn = insert_btn
+        self.update_btn = update_btn
         self.delete_btn = delete_btn
         return container
 
@@ -110,21 +129,40 @@ class LinkedListController(QWidget):
         self.insert_value_edit = QLineEdit()
         self.insert_value_edit.setPlaceholderText("Value")
 
+        self.update_index_spin = QSpinBox()
+        self.update_index_spin.setRange(0, 0)
+
+        self.update_value_edit = QLineEdit()
+        self.update_value_edit.setPlaceholderText("New value")
+
         self.delete_index_spin = QSpinBox()
         self.delete_index_spin.setRange(0, 0)
 
     def _refresh_spins(self):
         length = self.model.length
         self.insert_index_spin.setMaximum(length)
-        self.delete_index_spin.setMaximum(max(0, length - 1))
+        if self.insert_index_spin.value() > length:
+            self.insert_index_spin.setValue(length)
+
+        max_index = max(0, length - 1)
+        for spin in (self.delete_index_spin, self.update_index_spin):
+            spin.setMaximum(max_index)
+            if spin.value() > max_index:
+                spin.setValue(max_index)
 
         has_nodes = length > 0
         if self._panel_locked:
-            self.delete_index_spin.setEnabled(False)
-            self.delete_btn.setEnabled(False)
+            self.delete_index_spin.setDisabled(True)
+            self.delete_btn.setDisabled(True)
+            self.update_index_spin.setDisabled(True)
+            self.update_value_edit.setDisabled(True)
+            self.update_btn.setDisabled(True)
         else:
-            self.delete_index_spin.setEnabled(has_nodes)
-            self.delete_btn.setEnabled(has_nodes)
+            self.delete_index_spin.setDisabled(not has_nodes)
+            self.delete_btn.setDisabled(not has_nodes)
+            self.update_index_spin.setDisabled(not has_nodes)
+            self.update_value_edit.setDisabled(not has_nodes)
+            self.update_btn.setDisabled(not has_nodes)
 
     # ---------- Controller lifecycle ----------
 
@@ -180,6 +218,16 @@ class LinkedListController(QWidget):
         self.view.animate_insert(snapshot, inserted_id, index)
         self._refresh_spins()
 
+    def _on_update_value(self):
+        if self.model.length == 0:
+            return
+        index = self.update_index_spin.value()
+        value_text = self.update_value_edit.text().strip() or "∅"
+        value = self._coerce_value(value_text)
+        self.model.update_value(index, value)
+        self.view.update_values(self.model.snapshot())
+        self._refresh_spins()
+
     def _on_delete(self):
         if self.model.length == 0:
             return
@@ -204,6 +252,7 @@ class LinkedListController(QWidget):
         value = self._coerce_value(text.strip() or current)
         self.model.update_value(index, value)
         self.view.update_values(self.model.snapshot())
+        self._refresh_spins()
 
     def _on_lock_state(self, locked):
         self._panel_locked = locked
@@ -218,13 +267,14 @@ class LinkedListController(QWidget):
         self.insert_index_spin.setDisabled(locked)
         self.insert_value_edit.setDisabled(locked)
 
-        has_nodes = self.model.length > 0
         if locked:
             self.delete_index_spin.setDisabled(True)
             self.delete_btn.setDisabled(True)
+            self.update_index_spin.setDisabled(True)
+            self.update_value_edit.setDisabled(True)
+            self.update_btn.setDisabled(True)
         else:
-            self.delete_index_spin.setDisabled(not has_nodes)
-            self.delete_btn.setDisabled(not has_nodes)
+            self._refresh_spins()
 
     def _on_clear_all_requested(self):
         self.model.clear()
@@ -235,10 +285,17 @@ class LinkedListController(QWidget):
 
     @staticmethod
     def _parse_sequence(text: str):
-        cleaned = [part.strip() for part in text.split(",") if part.strip()]
-        if not cleaned:
+        if not text:
             return []
-        return [LinkedListController._coerce_value(part) for part in cleaned]
+        normalized = text.replace("，", ",")
+        tokens = [
+            part.strip()
+            for part in re.split(r"[,\s]+", normalized)
+            if part.strip()
+        ]
+        if not tokens:
+            return []
+        return [LinkedListController._coerce_value(part) for part in tokens]
 
     @staticmethod
     def _coerce_value(value):

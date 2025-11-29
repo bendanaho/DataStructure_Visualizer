@@ -6,8 +6,9 @@ from PyQt5.QtCore import (
     QVariantAnimation,
     QRectF,
     QEvent,
+    QTimer,
 )
-from PyQt5.QtGui import QColor, QBrush, QPainterPath, QPen, QTransform
+from PyQt5.QtGui import QColor, QBrush, QPainterPath, QPen, QTransform, QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
@@ -31,14 +32,16 @@ class LinkedListView(BaseStructureView):
         self.node_items = {}  # id -> LinkedListNodeItem
         self.order = []  # list of node ids in order
         self._dragging = False
-        self.arrow_items = {}  # (start_id, end_id) -> ArrowItem
-        self._default_scene_rect = QRectF(self.scene.sceneRect())
-        self._scaled = False
+        self.arrow_items = {}
 
         self._head_label = self._create_head_label()
         self.scene.addItem(self._head_label)
 
     # ---------- Scene lifecycle ----------
+    def bind_canvas(self, canvas):
+        super().bind_canvas(canvas)
+        if self._canvas:
+            QTimer.singleShot(0, self._auto_scale_view)
 
     def reset(self):
         self.scene.clear()
@@ -119,10 +122,18 @@ class LinkedListView(BaseStructureView):
         if forward_arrow_anim is None:
             forward_arrow_anim = self.anim.pause(100)
 
-        arrow_transition, arrow_restore = self._build_arrow_transition(
-            predecessor_id, successor_id, new_node.node_id
-        )
-        predecessor_anim = arrow_transition if arrow_transition else self.anim.pause(80)
+        arrow_transition, arrow_restore = (None, None)
+        if successor_id is not None:
+            arrow_transition, arrow_restore = self._build_arrow_transition(
+                predecessor_id, successor_id, new_node.node_id
+            )
+
+        tail_insertion = successor_id is None and predecessor_id is not None
+
+        if tail_insertion:
+            predecessor_anim = self.anim.pause(80)
+        else:
+            predecessor_anim = arrow_transition if arrow_transition else self.anim.pause(80)
 
         combined = self.anim.sequential(
             traversal,
@@ -134,8 +145,19 @@ class LinkedListView(BaseStructureView):
 
         def _finalizer():
             self._finalize_insert(nodes, new_node, index)
-            if arrow_restore:
-                arrow_restore()
+
+            if tail_insertion:
+                tail_anim, tail_restore = self._build_tail_arrow_extension(
+                    predecessor_id, new_node.node_id
+                )
+                if tail_anim:
+                    self._track_animation(
+                        tail_anim,
+                        finalizer=(lambda: tail_restore() if tail_restore else None),
+                    )
+            else:
+                if arrow_restore:
+                    arrow_restore()
 
         self._track_animation(combined, finalizer=_finalizer)
 
@@ -144,7 +166,7 @@ class LinkedListView(BaseStructureView):
         if not target_node:
             return
 
-        traversal = self._build_traversal_anim(max(0, index - 1))
+        traversal = self.anim.pause(50)
         predecessor_id = self.order[index - 1] if index > 0 else None
         successor_id = self.order[index + 1] if index + 1 < len(self.order) else None
 
@@ -415,6 +437,92 @@ class LinkedListView(BaseStructureView):
 
         return seq, _restore_style
 
+    def _build_tail_arrow_extension(self, predecessor_id, new_node_id, duration=720):
+        arrow = self.arrow_items.get((predecessor_id, new_node_id))
+        if arrow is None:
+            return None, None
+
+        start_item = arrow.start_item
+        end_item = arrow.end_item
+        if start_item is None or end_item is None:
+            return None, None
+
+        start_center = start_item.mapToScene(start_item.pointer_center())
+        hover_target = QPointF(
+            start_center.x() + max(22.0, start_item.pointer_size * 0.8),
+            start_center.y(),
+        )
+        end_center = end_item.mapToScene(
+            end_item.pointer_virtual_predecessor_center()
+        )
+
+        arrow.set_override_target(hover_target)
+        arrow.update_path()
+
+        arrow_ref = lambda: arrow if arrow.scene() is not None else None
+
+        current_pen = QPen(arrow.pen())
+        start_color = QColor(current_pen.color())
+        start_width = float(current_pen.widthF())
+        highlight_color = QColor("#ff1744")
+        highlight_width = max(5.0, start_width + 1.5)
+
+        highlight = self._animate_arrow_style(
+            arrow_ref=arrow_ref,
+            start_color=start_color,
+            end_color=highlight_color,
+            start_width=start_width,
+            end_width=highlight_width,
+            duration=360,
+        )
+
+        extension = QVariantAnimation()
+        extension.setDuration(self.anim.global_ctrl.scale_duration(duration))
+        extension.setStartValue(0.0)
+        extension.setEndValue(1.0)
+
+        def _update(progress):
+            arrow_obj = arrow_ref()
+            if arrow_obj is None:
+                return
+            interp = QPointF(
+                hover_target.x() + (end_center.x() - hover_target.x()) * progress,
+                hover_target.y() + (end_center.y() - hover_target.y()) * progress,
+            )
+            arrow_obj.set_override_target(interp)
+
+        def _finish():
+            arrow_obj = arrow_ref()
+            if arrow_obj is None:
+                return
+            arrow_obj.set_override_target(None)
+            arrow_obj.update_path()
+
+        extension.valueChanged.connect(_update)
+        extension.finished.connect(_finish)
+
+        seq = self.anim.sequential(
+            self.anim.pause(40),
+            highlight,
+            self.anim.pause(120),
+            extension,
+            self.anim.pause(100),
+        )
+
+        default_color = arrow.default_pen_color()
+        default_width = arrow.default_pen_width()
+
+        def _restore_style():
+            arrow_obj = arrow_ref()
+            if arrow_obj is None:
+                return
+            pen = QPen(arrow_obj.pen())
+            pen.setColor(default_color)
+            pen.setWidthF(default_width)
+            arrow_obj.setPen(pen)
+
+        return seq, _restore_style
+
     def _animate_new_arrow_link(self, start_node, successor_id, duration=700):
         if successor_id is None:
             return None
@@ -423,21 +531,18 @@ class LinkedListView(BaseStructureView):
         if successor_item is None:
             return None
 
-        start_center = start_node.mapToScene(
-            QPointF(LinkedListNodeItem.width, LinkedListNodeItem.height / 2)
-        )
+        start_center = start_node.mapToScene(start_node.pointer_center())
         end_center = successor_item.mapToScene(
-            QPointF(LinkedListNodeItem.width / 2, LinkedListNodeItem.height / 2)
+            successor_item.pointer_virtual_predecessor_center()
         )
 
         hover_target = QPointF(
-            start_center.x() + LinkedListNodeItem.width * 0.9,
+            start_center.x() + max(22.0, start_node.pointer_size * 0.8),
             start_center.y(),
         )
 
         arrow = ArrowItem(start_node, successor_item, orientation="right")
         arrow.setOpacity(0.0)
-        arrow.setZValue(-1)
         arrow.set_override_target(hover_target)
         self.scene.addItem(arrow)
         arrow.update()
@@ -476,7 +581,6 @@ class LinkedListView(BaseStructureView):
         duration=650,
     ):
         if successor_id is None:
-            # 没有后继节点，不需要重新指向
             return None
 
         arrow = holder.get("arrow")
@@ -489,10 +593,10 @@ class LinkedListView(BaseStructureView):
             return None
 
         start_point = old_end_item.mapToScene(
-            QPointF(LinkedListNodeItem.width / 2, LinkedListNodeItem.height / 2)
+            old_end_item.pointer_virtual_predecessor_center()
         )
         end_point = new_end_item.mapToScene(
-            QPointF(LinkedListNodeItem.width / 2, LinkedListNodeItem.height / 2)
+            new_end_item.pointer_virtual_predecessor_center()
         )
 
         centers = self._compute_node_centers()
@@ -567,19 +671,29 @@ class LinkedListView(BaseStructureView):
     def _build_traversal_anim(self, index):
         if index < 0:
             return self.anim.pause(50)
+
         seq = self.anim.sequential()
+
         for i in range(min(index + 1, len(self.order))):
             node_id = self.order[i]
             node_item = self.node_items[node_id]
-            seq.addAnimation(
-                self.anim.flash_brush(
-                    setter=node_item.setStrokeColor,
-                    start_color=node_item.strokeColor,
-                    end_color=QColor("#4fc3f7"),
-                    duration=250,
-                    loops=1,
-                )
+
+            original_color = QColor(node_item.fillColor)
+
+            flash = self.anim.flash_brush(
+                setter=node_item.setFillColor,
+                start_color=original_color,
+                end_color=QColor("#4fc3f7"),
+                duration=250,
+                loops=1,
             )
+
+            def _restore(color=original_color, item=node_item):
+                item.setFillColor(color)
+
+            flash.finished.connect(_restore)
+            seq.addAnimation(flash)
+
         return seq
 
     # ---------- Context menu on background ----------
@@ -795,8 +909,9 @@ class LinkedListView(BaseStructureView):
 
     def _refresh_connectivity(self):
         self._rebuild_arrows()
-        self._auto_scale_view()
         self._update_head_label()
+        self._update_tail_markers()
+        self._auto_scale_view()
 
     def _update_head_label(self):
         if not hasattr(self, "_head_label"):
@@ -825,46 +940,13 @@ class LinkedListView(BaseStructureView):
         )
         self._head_label.setVisible(True)
 
+    def _update_tail_markers(self):
+        tail_id = self.order[-1] if self.order else None
+        for node_id, node_item in self.node_items.items():
+            node_item.set_tail(node_id == tail_id)
+
     def _auto_scale_view(self, padding=120):
-        if not self._canvas or self._dragging:
-            return
-
-        items_rect = self.scene.itemsBoundingRect()
-        if items_rect.isNull():
-            return
-
-        padded = QRectF(items_rect)
-        padded.adjust(-padding, -padding, padding, padding)
-
-        base = self._default_scene_rect
-
-        if base.contains(padded):
-            if self._scaled:
-                self._canvas.resetTransform()
-                self._scaled = False
-            self.scene.setSceneRect(base)
-            self._canvas.ensureVisible(items_rect, padding, padding)
-            return
-
-        target_rect = padded
-        self.scene.setSceneRect(target_rect)
-
-        self._canvas.resetTransform()
-        viewport = self._canvas.viewport().rect()
-        if viewport.isNull():
-            return
-
-        need_zoom_out = (
-            target_rect.width() > viewport.width()
-            or target_rect.height() > viewport.height()
-        )
-
-        if need_zoom_out:
-            self._canvas.fitInView(target_rect, Qt.KeepAspectRatio)
-            self._scaled = True
-        else:
-            self._canvas.centerOn(target_rect.center())
-            self._scaled = False
+        self.auto_fit_view(padding=padding, skip_if=lambda: self._dragging)
 
     def _estimate_target_x_position(self, index, centers):
         if not self.order:
@@ -894,46 +976,71 @@ class LinkedListNodeItem(QGraphicsObject):
     contextEdit = pyqtSignal(int)
     dragStateChanged = pyqtSignal(bool)
 
-    width = 100
     height = 50
+    pointer_size = height
+    data_base_width = 100
+    width = data_base_width + pointer_size  # 兼容旧逻辑
 
     def __init__(self, node_id, value):
         super().__init__()
         self.node_id = node_id
         self._value = str(value)
-        self.fillColor = QColor("#2d9cdb")
-        self.strokeColor = QColor("#102a43")
+        self.fillColor = QColor("#e9e9ef")
+        self.strokeColor = QColor("#4a4a52")
+        self.textColor = QColor("#1f1f24")
+        self.data_width = self.data_base_width
+        self._label_font = self._create_label_font()
+        self._is_tail = False
+
         self.setFlags(
             QGraphicsItem.ItemIsMovable
             | QGraphicsItem.ItemIsSelectable
             | QGraphicsItem.ItemSendsGeometryChanges
         )
 
+        self._adjust_data_width()
+
     def boundingRect(self):
-        return self._rect()
-
-    def _rect(self):
-        from PyQt5.QtCore import QRectF
-
-        return QRectF(0, 0, self.width, self.height)
+        return QRectF(0, 0, self.total_width(), self.height)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(painter.Antialiasing)
-        painter.setPen(QPen(self.strokeColor, 2))
-        painter.setBrush(QBrush(self.fillColor))
-        painter.drawRoundedRect(self._rect(), 14, 14)
 
-        font = painter.font()
-        font.setPointSize(14)
-        painter.setFont(font)
-        painter.setPen(Qt.white)
-        painter.drawText(self._rect(), Qt.AlignCenter, self._value)
+        outer_rect = self.boundingRect()
+        divider_x = self.data_width
+
+        outline_pen = QPen(self.strokeColor, 2.2)
+        painter.setPen(outline_pen)
+        painter.setBrush(QBrush(self.fillColor))
+        painter.drawRect(outer_rect)
+
+        divider_pen = QPen(self.strokeColor, 1.8)
+        painter.setPen(divider_pen)
+        painter.drawLine(
+            QPointF(divider_x, 1.0),
+            QPointF(divider_x, self.height - 1.0),
+        )
+
+        painter.setFont(self._label_font)
+        painter.setPen(self.textColor)
+        text_rect = QRectF(0, 0, self.data_width, self.height).adjusted(10, 0, -10, 0)
+        painter.drawText(text_rect, Qt.AlignCenter, self._value)
+
+        if self._is_tail:
+            pointer_text_rect = self.pointer_rect().adjusted(4, 4, -4, -4)
+            tail_font = QFont(self._label_font)
+            tail_font.setPointSize(7)  # 明确设置更小字号，防止被截断
+            tail_font.setBold(True)  # 加粗
+            painter.setFont(tail_font)
+            painter.setPen(self.strokeColor)
+            painter.drawText(pointer_text_rect, Qt.AlignCenter, "NULL")
 
     def value(self):
         return self._value
 
     def set_value(self, value: str):
         self._value = str(value)
+        self._adjust_data_width()
         self.update()
 
     def setFillColor(self, color: QColor):
@@ -943,6 +1050,36 @@ class LinkedListNodeItem(QGraphicsObject):
     def setStrokeColor(self, color: QColor):
         self.strokeColor = QColor(color)
         self.update()
+
+    def set_tail(self, is_tail: bool):
+        if self._is_tail != is_tail:
+            self._is_tail = is_tail
+            self.update()
+
+    def total_width(self):
+        return self.data_width + self.pointer_size
+
+    def data_rect(self):
+        return QRectF(0, 0, self.data_width, self.height)
+
+    def pointer_rect(self):
+        return QRectF(self.data_width, 0, self.pointer_size, self.pointer_size)
+
+    def pointer_center(self):
+        return QPointF(self.data_width + self.pointer_size / 2.0, self.height / 2.0)
+
+    def pointer_entry_point(self):
+        return self.pointer_center()
+
+    def pointer_virtual_predecessor_center(self):
+        square_size = self.pointer_size * 0.8
+        half_square = square_size / 2.0
+        center_x = min(self.data_width - half_square, half_square)
+        center_x = max(half_square, center_x)
+        return QPointF(center_x, self.height / 2.0)
+
+    def center_point(self):
+        return QPointF(self.total_width() / 2.0, self.height / 2.0)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionChange:
@@ -968,6 +1105,20 @@ class LinkedListNodeItem(QGraphicsObject):
         elif chosen == edit_action:
             self.contextEdit.emit(self.node_id)
 
+    def _create_label_font(self):
+        font = QFont()
+        font.setPointSize(14)
+        return font
+
+    def _adjust_data_width(self):
+        metrics = QFontMetrics(self._label_font)
+        padding = 32
+        required = metrics.horizontalAdvance(self._value) + padding
+        new_data_width = max(self.data_base_width, required)
+
+        if new_data_width != self.data_width:
+            self.prepareGeometryChange()
+            self.data_width = new_data_width
 
 class ArrowItem(QGraphicsPathItem):
     def __init__(self, start_item: LinkedListNodeItem, end_item: LinkedListNodeItem, orientation="auto"):
@@ -983,7 +1134,7 @@ class ArrowItem(QGraphicsPathItem):
         pen.setJoinStyle(Qt.RoundJoin)
         self._default_pen = QPen(pen)
         self.setPen(QPen(self._default_pen))
-        self.setZValue(-1)
+        self.setZValue(5)  # 确保箭头绘制在节点之后
 
         self.update_path()
 
@@ -1023,27 +1174,32 @@ class ArrowItem(QGraphicsPathItem):
 
     def update_path(self):
         start_anchor = self.start_item.mapToScene(
-            QPointF(LinkedListNodeItem.width, LinkedListNodeItem.height / 2)
+            self.start_item.pointer_center()
         )
 
         if self._override_target is not None:
             target_center = self._override_target
         else:
             target_center = self.end_item.mapToScene(
-                QPointF(LinkedListNodeItem.width / 2, LinkedListNodeItem.height / 2)
+                self.end_item.pointer_virtual_predecessor_center()
             )
 
         dx = target_center.x() - start_anchor.x()
         dy = target_center.y() - start_anchor.y()
-        distance = max((dx ** 2 + dy ** 2) ** 0.5, 1.0)
-        retreat = LinkedListNodeItem.width * 0.6
+        distance = math.hypot(dx, dy)
+        if distance < 1e-3:
+            distance = 1.0
 
-        if distance <= retreat + 8:
-            retreat = max(distance * 0.4, 8.0)
+        entry_gap = max(20.0, self.end_item.pointer_size * 0.35)
+        if distance <= entry_gap + 4.0:
+            entry_gap = max(distance * 0.4, 6.0)
+
+        norm_dx = dx / distance
+        norm_dy = dy / distance
 
         end_point = QPointF(
-            target_center.x() - dx / distance * retreat,
-            target_center.y() - dy / distance * retreat,
+            target_center.x() - norm_dx * entry_gap,
+            target_center.y() - norm_dy * entry_gap,
         )
 
         horizontal = max(1.0, abs(end_point.x() - start_anchor.x()))

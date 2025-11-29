@@ -22,21 +22,17 @@ class ArrayView(BaseStructureView):
         self.cells = {}
         self.order = []
         self.index_labels = {}
+        self.slot_items = {}
 
         self.base_origin = QPointF(-360, -ArrayCellItem.height / 2)
-        self.slot_gap = 24
-        self.container_padding_x = 14
-        self.container_padding_top = 18
-        self.container_padding_bottom = 20
-        self.min_visible_capacity = 8
-
-        self.container_item = self._create_container_item()
-        self.scene.addItem(self.container_item)
+        self.slot_gap = 0  # 无缝排列
+        self.initial_capacity = 4
+        self.capacity = self.initial_capacity
 
         self._default_scene_rect = QRectF(self.scene.sceneRect())
         self._scaled = False
 
-        self._update_container_geometry()
+        self._rebuild_slots()
         self._auto_scale_view()
 
     def bind_canvas(self, view):
@@ -50,14 +46,15 @@ class ArrayView(BaseStructureView):
         self.cells.clear()
         self.order.clear()
         self.index_labels.clear()
+        self.slot_items.clear()
 
-        self.container_item = self._create_container_item()
-        self.scene.addItem(self.container_item)
-        self._update_container_geometry()
+        self.capacity = self.initial_capacity
+        self._rebuild_slots()
         self._auto_scale_view()
 
     def animate_build(self, snapshot):
         self.reset()
+        self._ensure_capacity(len(snapshot))
         if not snapshot:
             self._finalize_snapshot(snapshot)
             return
@@ -84,6 +81,31 @@ class ArrayView(BaseStructureView):
             self.reset()
             return
 
+        self._ensure_capacity(len(snapshot))
+
+        # ---------- 1. 逐个后移 ----------
+        shift_ids = [
+            info["id"]
+            for info in snapshot[index + 1 :]
+            if info["id"] in self.cells
+        ]
+        shift_count = len(shift_ids)
+        shift_duration = self._calc_shift_duration(shift_count)
+
+        shift_sequence = self.anim.sequential()
+        for node_id in reversed(shift_ids):
+            cell = self.cells[node_id]
+            current_idx = self.order.index(node_id)
+            target_idx = current_idx + 1
+            shift_sequence.addAnimation(
+                self.anim.move_item(
+                    cell,
+                    self._slot_position(target_idx),
+                    duration=shift_duration,
+                )
+            )
+
+        # ---------- 2. 创建或更新新元素 ----------
         new_info = snapshot[index]
         cell = self.cells.get(inserted_id)
         if not cell:
@@ -93,19 +115,10 @@ class ArrayView(BaseStructureView):
         else:
             cell.set_value(new_info["value"])
 
-        motions = []
-        for idx, info in enumerate(snapshot):
-            item = self.cells.get(info["id"])
-            if not item:
-                item = self._create_cell_item(info["id"], info["value"])
-                item.setOpacity(0.0)
-                item.setPos(self._slot_position(idx))
-            item.set_value(info["value"])
-            motions.append(
-                self.anim.move_item(item, self._slot_position(idx), duration=520)
-            )
+        drop = self.anim.move_item(cell, self._slot_position(index), duration=420)
+        fade = self.anim.fade_item(cell, cell.opacity(), 1.0, duration=420)
+        insert_anim = self.anim.parallel(drop, fade)
 
-        fade = self.anim.fade_item(cell, cell.opacity(), 1.0, duration=520)
         highlight = self.anim.flash_brush(
             setter=cell.setFillColor,
             start_color=cell.fillColor,
@@ -114,37 +127,78 @@ class ArrayView(BaseStructureView):
             loops=2,
         )
 
-        group = self.anim.parallel(*(motions + [fade]))
-        sequence = self.anim.sequential(group, highlight)
+        # ---------- 3. 串接：后移 -> 插入 -> 闪烁 ----------
+        sequence = self.anim.sequential()
+        if shift_count > 0:
+            sequence.addAnimation(shift_sequence)
+        sequence.addAnimation(insert_anim)
+        sequence.addAnimation(highlight)
+
         self._track_animation(
-            sequence, finalizer=lambda: self._finalize_snapshot(snapshot)
+            sequence,
+            finalizer=lambda: self._finalize_snapshot(snapshot),
         )
 
     def animate_delete(self, snapshot, removed_id, index):
+        self._ensure_capacity(len(snapshot))
+
         removed_cell = self.cells.get(removed_id)
-        fade_out = (
-            self.anim.fade_item(removed_cell, 1.0, 0.0, duration=360)
-            if removed_cell
-            else None
+        if not removed_cell:
+            # 若场景中已不存在该元素，直接做最终收尾
+            self._finalize_snapshot(snapshot)
+            return
+
+        # ---------- 1. 红色闪烁 ----------
+        blink = self.anim.flash_brush(
+            setter=removed_cell.setFillColor,
+            start_color=removed_cell.fillColor,
+            end_color=QColor("#ff7043"),
+            duration=360,
+            loops=2,
         )
 
-        motions = []
-        for idx, info in enumerate(snapshot):
-            item = self.cells.get(info["id"])
-            if not item:
-                item = self._create_cell_item(info["id"], info["value"])
-                item.setPos(self._slot_position(idx))
-            item.set_value(info["value"])
-            motions.append(
-                self.anim.move_item(item, self._slot_position(idx), duration=480)
+        # ---------- 2. 移出动画 ----------
+        exit_target = self._spawn_position(index)
+        lift = self.anim.move_item(removed_cell, exit_target, duration=360)
+        fade = self.anim.fade_item(removed_cell, 1.0, 0.0, duration=360)
+        exit_anim = self.anim.parallel(lift, fade)
+
+        # ---------- 3. 逐个左移 ----------
+        shift_ids = [
+            info["id"]
+            for info in snapshot[index:]
+            if info["id"] in self.cells and info["id"] != removed_id
+        ]
+        shift_count = len(shift_ids)
+        shift_duration = self._calc_shift_duration(shift_count)
+
+        shift_sequence = self.anim.sequential()
+        for node_id in shift_ids:
+            cell = self.cells[node_id]
+            current_idx = self.order.index(node_id)
+            target_idx = current_idx - 1
+            shift_sequence.addAnimation(
+                self.anim.move_item(
+                    cell,
+                    self._slot_position(target_idx),
+                    duration=shift_duration,
+                )
             )
 
-        group = self.anim.parallel(*(motions + ([fade_out] if fade_out else [])))
+        # ---------- 4. 串接 ----------
+        sequence = self.anim.sequential()
+        sequence.addAnimation(blink)
+        sequence.addAnimation(exit_anim)
+        if shift_count > 0:
+            sequence.addAnimation(shift_sequence)
+
         self._track_animation(
-            group, finalizer=lambda: self._finalize_snapshot(snapshot)
+            sequence,
+            finalizer=lambda: self._finalize_snapshot(snapshot),
         )
 
     def animate_update_value(self, snapshot, index):
+        self._ensure_capacity(len(snapshot))
         if index < 0 or index >= len(snapshot):
             self.update_values(snapshot)
             return
@@ -168,6 +222,7 @@ class ArrayView(BaseStructureView):
         )
 
     def update_values(self, snapshot):
+        self._ensure_capacity(len(snapshot))
         for idx, info in enumerate(snapshot):
             item = self.cells.get(info["id"])
             if not item:
@@ -181,6 +236,13 @@ class ArrayView(BaseStructureView):
         return self.order.index(node_id) if node_id in self.order else -1
 
     # ---------- Internal helpers ----------
+    def _calc_shift_duration(self, shift_count: int) -> int:
+        """
+        根据需要移动的元素个数决定单个元素的移动时间。
+        元素越多，单个移动越快（下限 180ms，上限 520ms）。
+        """
+        shift_count = max(1, shift_count)
+        return max(120, int(520 - 35 * (shift_count - 1)))
 
     def _create_cell_item(self, node_id, value):
         cell = ArrayCellItem(node_id, value)
@@ -219,14 +281,16 @@ class ArrayView(BaseStructureView):
                     self.scene.removeItem(item)
 
         self.order = [info["id"] for info in snapshot]
+        index_map = {node_id: idx for idx, node_id in enumerate(self.order)}
         for info in snapshot:
             item = self.cells.get(info["id"])
             if item:
+                idx = index_map[info["id"]]
                 item.set_value(info["value"])
+                item.setPos(self._slot_position(idx))
                 item.setZValue(2)
 
         self._update_index_labels()
-        self._update_container_geometry()
         self._auto_scale_view()
 
     def _update_index_labels(self):
@@ -245,7 +309,7 @@ class ArrayView(BaseStructureView):
                 font = label.font()
                 font.setPointSize(12)
                 label.setFont(font)
-                label.setZValue(0)
+                label.setZValue(1)
                 self.scene.addItem(label)
                 self.index_labels[idx] = label
             else:
@@ -259,29 +323,34 @@ class ArrayView(BaseStructureView):
         y = slot.y() + ArrayCellItem.height + 8
         label.setPos(x, y)
 
-    def _visible_slot_count(self):
-        return max(self.min_visible_capacity, len(self.order), 1)
+    def _ensure_capacity(self, required: int):
+        if required <= self.capacity:
+            return
+        while self.capacity < required:
+            self.capacity *= 2
+        self._rebuild_slots()
 
-    def _update_container_geometry(self):
-        visible_slots = self._visible_slot_count()
-        content_width = (
-            visible_slots * ArrayCellItem.width
-            + max(0, visible_slots - 1) * self.slot_gap
-        )
-        content_height = (
-            ArrayCellItem.height
-            + self.container_padding_top
-            + self.container_padding_bottom
-        )
+    def _rebuild_slots(self):
+        # 创建或更新 slot 图元
+        for idx in range(self.capacity):
+            slot = self.slot_items.get(idx)
+            if slot is None:
+                slot = self._create_slot_item(idx)
+                self.slot_items[idx] = slot
+                self.scene.addItem(slot)
+            slot.setPos(self._slot_position(idx))
 
-        self.container_item.set_geometry(
-            content_width + self.container_padding_x * 2,
-            content_height,
-        )
-        self.container_item.setPos(
-            self.base_origin.x() - self.container_padding_x,
-            self.base_origin.y() - self.container_padding_top,
-        )
+        # 移除超出容量的 slot（通常用不到）
+        for idx in list(self.slot_items.keys()):
+            if idx >= self.capacity:
+                slot = self.slot_items.pop(idx)
+                if slot.scene():
+                    self.scene.removeItem(slot)
+
+    def _create_slot_item(self, index: int):
+        slot = ArraySlotItem()
+        slot.setZValue(-1)
+        return slot
 
     def _auto_scale_view(self, padding=80):
         if not self._canvas:
@@ -329,11 +398,6 @@ class ArrayView(BaseStructureView):
                 return True
         return super().eventFilter(watched, event)
 
-    def _create_container_item(self):
-        item = ArrayContainerItem()
-        item.setZValue(-5)
-        return item
-
 
 class ArrayCellItem(QGraphicsObject):
     contextDelete = pyqtSignal(int)
@@ -346,9 +410,9 @@ class ArrayCellItem(QGraphicsObject):
         super().__init__()
         self.node_id = node_id
         self._value = str(value)
-        self.fillColor = QColor("#5c6bc0")
-        self.strokeColor = QColor("#283593")
-        self.textColor = QColor("#fafafa")
+        self.fillColor = QColor("#e9e9ef")
+        self.strokeColor = QColor("#4a4a52")
+        self.textColor = QColor("#1f1f24")
         self.setZValue(2)
         self.setAcceptedMouseButtons(Qt.LeftButton | Qt.RightButton)
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
@@ -360,7 +424,7 @@ class ArrayCellItem(QGraphicsObject):
         painter.setRenderHint(painter.Antialiasing)
         painter.setPen(QPen(self.strokeColor, 2))
         painter.setBrush(QBrush(self.fillColor))
-        painter.drawRoundedRect(self.boundingRect(), 12, 12)
+        painter.drawRect(self.boundingRect())
 
         font = painter.font()
         font.setPointSize(14)
@@ -396,28 +460,20 @@ class ArrayCellItem(QGraphicsObject):
             self.contextDelete.emit(self.node_id)
 
 
-class ArrayContainerItem(QGraphicsObject):
+class ArraySlotItem(QGraphicsObject):
+    width = ArrayCellItem.width
+    height = ArrayCellItem.height
+
     def __init__(self):
         super().__init__()
-        self._rect = QRectF(0, 0, 400, 120)
-        self._pen = QPen(QColor("#90a4ae"), 2)
-        self._pen.setJoinStyle(Qt.RoundJoin)
-        self._pen.setCapStyle(Qt.RoundCap)
-        self._brush = QBrush(QColor(255, 255, 255, 18))
+        self.fillColor = QColor("#ffffff")
+        self.strokeColor = QColor("#cfd8dc")
 
     def boundingRect(self):
-        return self._rect
-
-    def set_geometry(self, width, height):
-        rect = QRectF(0, 0, width, height)
-        if rect == self._rect:
-            return
-        self.prepareGeometryChange()
-        self._rect = rect
-        self.update()
+        return QRectF(0, 0, self.width, self.height)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(painter.Antialiasing)
-        painter.setPen(self._pen)
-        painter.setBrush(self._brush)
-        painter.drawRoundedRect(self._rect, 16, 16)
+        painter.setPen(QPen(self.strokeColor, 1.6))
+        painter.setBrush(QBrush(self.fillColor))
+        painter.drawRect(self.boundingRect())

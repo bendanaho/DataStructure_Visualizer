@@ -1,3 +1,5 @@
+import re
+
 from PyQt5.QtWidgets import (
     QFormLayout,
     QGridLayout,
@@ -208,9 +210,17 @@ class ArrayController(QWidget):
         if self.model.length == 0:
             return
         index = self.delete_index_spin.value()
+
+        # ① 删除前获取快照，拿到目标节点 id
+        snapshot_before = self.model.snapshot()
+        removed_id = snapshot_before[index]["id"]
+
+        # ② 再做实际删除
         self.model.delete(index)
-        snapshot = self.model.snapshot()
-        self.view.animate_delete(snapshot, -1, index)
+        snapshot_after = self.model.snapshot()
+
+        # ③ 把真实 id 传给视图
+        self.view.animate_delete(snapshot_after, removed_id, index)
         self._refresh_spins()
 
     def _handle_delete_from_view(self, index):
@@ -285,10 +295,20 @@ class ArrayController(QWidget):
 
     @staticmethod
     def _parse_sequence(text: str):
-        tokens = [part.strip() for part in text.split(",") if part.strip()]
+        if not text:
+            return []
+
+        normalized = text.replace("，", ",")
+        tokens = [
+            part.strip()
+            for part in re.split(r"[,\s]+", normalized)
+            if part.strip()
+        ]
+
         if not tokens:
             return []
-        return [ArrayController._coerce_value(token) for token in tokens]
+
+        return [ArrayController._coerce_value(part) for part in tokens]
 
     @staticmethod
     def _coerce_value(value):
