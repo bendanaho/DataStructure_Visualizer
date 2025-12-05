@@ -21,6 +21,7 @@ from widgets.graphics_view import CustomGraphicsView
 from arrayviz.arr_ctrl import ArrayController
 from linklist.sl_ctrl import LinkedListController
 from stack.st_ctrl import StackController
+from bst.bst_ctrl import BSTController
 
 
 class MainWindow(QMainWindow):
@@ -117,10 +118,12 @@ class MainWindow(QMainWindow):
         linked_list = LinkedListController(self.global_ctrl)
         stack = StackController(self.global_ctrl)
         array = ArrayController(self.global_ctrl)
+        bst = BSTController(self.global_ctrl)
 
         self._add_controller("Linked List", linked_list)
         self._add_controller("Stack", stack)
         self._add_controller("Array", array)
+        self._add_controller("BST", bst)
 
     def _add_controller(self, name, controller):
         panel = controller.build_panel()

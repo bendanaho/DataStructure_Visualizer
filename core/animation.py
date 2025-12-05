@@ -48,31 +48,29 @@ class AnimationToolkit:
         setter: callable receiving QColor (e.g. node.setBrushColor).
         """
         total = self._duration(duration)
-        anim = QVariantAnimation()
-        anim.setDuration(total)
-        anim.setStartValue(start_color)
-        anim.setEndValue(end_color)
-        anim.setEasingCurve(QEasingCurve.InOutQuad)
 
-        def _update(value):
-            if isinstance(value, QColor):
-                setter(value)
+        def _make_segment(_start, _end):
+            anim = QVariantAnimation()
+            anim.setDuration(total)
+            anim.setStartValue(QColor(_start))
+            anim.setEndValue(QColor(_end))
+            anim.setEasingCurve(QEasingCurve.InOutQuad)
 
-        anim.valueChanged.connect(_update)
+            def _update(value):
+                if isinstance(value, QColor):
+                    setter(value)
 
-        if loops > 1:
-            seq = QSequentialAnimationGroup()
-            for _ in range(loops):
-                seq.addAnimation(anim)
-                reverse = QVariantAnimation()
-                reverse.setDuration(total)
-                reverse.setStartValue(end_color)
-                reverse.setEndValue(start_color)
-                reverse.setEasingCurve(QEasingCurve.InOutQuad)
-                reverse.valueChanged.connect(_update)
-                seq.addAnimation(reverse)
-            return seq
-        return anim
+            anim.valueChanged.connect(_update)
+            return anim
+
+        if loops <= 1:
+            return _make_segment(start_color, end_color)
+
+        seq = QSequentialAnimationGroup()
+        for _ in range(loops):
+            seq.addAnimation(_make_segment(start_color, end_color))
+            seq.addAnimation(_make_segment(end_color, start_color))
+        return seq
 
     def pause(self, duration=150):
         pause = QVariantAnimation()

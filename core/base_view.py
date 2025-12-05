@@ -28,6 +28,25 @@ class BaseStructureView(QObject):
         self._view_anim = None
         self._max_view_scale = 1  # 防止节点过少时放得太大
 
+    def stop_all_animations(self):
+        """Force-stop every tracked animation before tearing down the scene."""
+        self._cancel_view_anim()
+
+        if not self._running:
+            return
+
+        running = list(self._running)
+        self._running.clear()
+
+        for anim in running:
+            setattr(anim, "_base_view_aborted", True)
+            try:
+                anim.stop()
+            except RuntimeError:
+                pass
+
+        self.unlock_interactions()
+
     def bind_canvas(self, view):
         self._cancel_view_anim()
         self._canvas = view
@@ -137,6 +156,8 @@ class BaseStructureView(QObject):
         if animation is None:
             return
 
+        setattr(animation, "_base_view_aborted", False)
+
         self.lock_interactions()
         self._running.append(animation)
 
@@ -145,7 +166,7 @@ class BaseStructureView(QObject):
                 self._running.remove(animation)
             if not self._running:
                 self.unlock_interactions()
-            if finalizer:
+            if finalizer and not getattr(animation, "_base_view_aborted", False):
                 finalizer()
 
         animation.finished.connect(_cleanup)
@@ -154,3 +175,10 @@ class BaseStructureView(QObject):
     def ensure_visible(self, rect, xpad=20, ypad=20):
         if self._canvas:
             self._canvas.ensureVisible(rect, xpad, ypad)
+
+    def _auto_scale_view(self):
+        """子类调用的统一自适应封装。"""
+        self.auto_fit_view(
+            padding=120,
+            skip_if=lambda: self._canvas is None or not self.scene.items(),
+        )
