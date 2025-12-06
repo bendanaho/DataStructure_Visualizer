@@ -85,15 +85,16 @@ class LinkedListView(BaseStructureView):
         self._track_animation(sequential, finalizer=self._refresh_connectivity)
 
     def animate_insert(self, nodes, inserted_id, index):
+        # 1. 创建新节点图形项（初始状态：透明、在目标位置上方120px）
         new_info = next(node for node in nodes if node["id"] == inserted_id)
-        target_position = self._pick_sparse_position(index=index)
-
+        target_position = self._pick_sparse_position(index=index)                   # 计算新节点的目标位置
         new_node = LinkedListNodeItem(new_info["id"], new_info["value"])
         new_node.setOpacity(0.0)
-        new_node.setPos(QPointF(target_position.x(), target_position.y() - 120))
+        new_node.setPos(QPointF(target_position.x(), target_position.y() - 120))    # 目标位置的上方120位置
+        # 2. 注册事件监听
         new_node.positionChanged.connect(self._update_arrows)
-        new_node.positionChanged.connect(self._update_head_label)
-        new_node.contextDelete.connect(self._emit_delete)
+        new_node.positionChanged.connect(self._update_head_label)                   # 拖动时更新箭头
+        new_node.contextDelete.connect(self._emit_delete)                           # 右键删除
         new_node.contextEdit.connect(self._emit_edit)
         new_node.dragStateChanged.connect(self._on_drag_state_changed)
         self.scene.addItem(new_node)
@@ -103,22 +104,22 @@ class LinkedListView(BaseStructureView):
         predecessor_id = self.order[index - 1] if index > 0 else None
         successor_id = self.order[index] if index < len(self.order) else None
 
-        traversal = self._build_traversal_anim(index)
-
-        fade_in = self.anim.parallel(
+        # 构建动画序列（关键！）
+        traversal = self._build_traversal_anim(index)                       # 遍历前index个节点（蓝色闪烁）
+        fade_in = self.anim.parallel(                                       # 并行动画：淡入+下落
             self.anim.move_item(new_node, target_position, duration=650),
             self.anim.fade_item(new_node, 0.0, 1.0, duration=650),
         )
 
-        flash_new = self.anim.flash_brush(
+        flash_new = self.anim.flash_brush(      # 新节点红色闪烁2次
             setter=new_node.setFillColor,
             start_color=new_node.fillColor,
             end_color=QColor("#ff4d4d"),
-            duration=450,
+            duration=400,
             loops=2,
         )
 
-        forward_arrow_anim = self._animate_new_arrow_link(new_node, successor_id)
+        forward_arrow_anim = self._animate_new_arrow_link(new_node, successor_id)   # 绘制指向后继的箭头
         if forward_arrow_anim is None:
             forward_arrow_anim = self.anim.pause(100)
 
@@ -135,12 +136,13 @@ class LinkedListView(BaseStructureView):
         else:
             predecessor_anim = arrow_transition if arrow_transition else self.anim.pause(80)
 
+        # 组合成顺序动画
         combined = self.anim.sequential(
-            traversal,
-            fade_in,
-            flash_new,
-            forward_arrow_anim,
-            predecessor_anim,
+            traversal,          # 1. 遍历
+            fade_in,            # 2. 淡入
+            flash_new,          # 3. 闪烁
+            forward_arrow_anim, # 4. 箭头动画
+            predecessor_anim,   # 5. 前驱箭头重定向
         )
 
         def _finalizer():
@@ -159,25 +161,26 @@ class LinkedListView(BaseStructureView):
                 if arrow_restore:
                     arrow_restore()
 
+        # 执行动画并设置回调
         self._track_animation(combined, finalizer=_finalizer)
 
     def animate_delete(self, nodes, removed_id, index):
         target_node = self.node_items.get(removed_id)
         if not target_node:
             return
-
+        # 1. 计算前驱和后继节点
         traversal = self.anim.pause(50)
         predecessor_id = self.order[index - 1] if index > 0 else None
         successor_id = self.order[index + 1] if index + 1 < len(self.order) else None
-
+        # 2. 构建动画序列
         flash = self.anim.flash_brush(
             setter=target_node.setFillColor,
             start_color=target_node.fillColor,
-            end_color=QColor("#ff4d4d"),
-            duration=450,
+            end_color=QColor("#ff4d4d"),    # 红色闪烁
+            duration=400,
             loops=2,
         )
-
+        # 3. 箭头重定向动画（关键！）
         arrow_transition, arrow_restore = self._build_arrow_transition(
             predecessor_id, removed_id, successor_id
         )
@@ -189,7 +192,7 @@ class LinkedListView(BaseStructureView):
             if outgoing_arrow_fade
             else fade_out_node
         )
-
+        # 5. 组合成顺序动画
         seq = self.anim.sequential(
             traversal,
             flash,
@@ -286,6 +289,7 @@ class LinkedListView(BaseStructureView):
             self.scene.addItem(arrow)
             self.arrow_items[(start_id, end_id)] = arrow
 
+    # 计算一个节点的位置是valley、peak还是其他
     def _classify_nodes_by_height(self, centers):
         classifications = {}
         for idx, node_id in enumerate(self.order):
@@ -295,21 +299,22 @@ class LinkedListView(BaseStructureView):
             y = centers[node_id].y()
             prev_id = self.order[idx - 1] if idx > 0 else None
             next_id = self.order[idx + 1] if idx < len(self.order) - 1 else None
-            prev_y = centers[prev_id].y() if prev_id and prev_id in centers else None
-            next_y = centers[next_id].y() if next_id and next_id in centers else None
+            prev_y = centers[prev_id].y() if prev_id is not None and prev_id in centers else None
+            next_y = centers[next_id].y() if next_id is not None and next_id in centers else None
 
             if prev_y is None or next_y is None:
                 classifications[node_id] = None
                 continue
 
-            if y > prev_y and y > next_y:
+            if y > prev_y and y > next_y: #
                 classifications[node_id] = "valley"
-            elif y < prev_y and y < next_y:
+            elif y < prev_y and y < next_y: #
                 classifications[node_id] = "peak"
             else:
                 classifications[node_id] = None
         return classifications
 
+    # 确定箭头弧度是向上还是向下
     def _decide_arc_orientation(self, start_id, end_id, classifications, centers):
         if start_id not in centers or end_id not in centers:
             return "down"
@@ -328,6 +333,23 @@ class LinkedListView(BaseStructureView):
         start_y = centers[start_id].y()
         end_y = centers[end_id].y()
         return "down" if start_y <= end_y else "up"
+
+    def _decide_orientation_for_pair(
+        self, start_id, end_id, classifications, centers
+    ):
+        try:
+            start_idx = self.order.index(start_id)
+            if start_idx + 1 < len(self.order) and self.order[start_idx + 1] == end_id:
+                return self._decide_arc_orientation(
+                    start_id, end_id, classifications, centers
+                )
+        except ValueError:
+            pass
+        start_point = centers.get(start_id)
+        end_point = centers.get(end_id)
+        if not start_point or not end_point:
+            return "down"
+        return "down" if start_point.y() <= end_point.y() else "up"
 
     def _update_arrows(self, *_):
         self._refresh_arrow_paths()
@@ -351,27 +373,11 @@ class LinkedListView(BaseStructureView):
             arrow.set_orientation(orientation)
             arrow.update_path()
 
-    def _decide_orientation_for_pair(
-        self, start_id, end_id, classifications, centers
-    ):
-        try:
-            start_idx = self.order.index(start_id)
-            if start_idx + 1 < len(self.order) and self.order[start_idx + 1] == end_id:
-                return self._decide_arc_orientation(
-                    start_id, end_id, classifications, centers
-                )
-        except ValueError:
-            pass
-        start_point = centers.get(start_id)
-        end_point = centers.get(end_id)
-        if not start_point or not end_point:
-            return "down"
-        return "down" if start_point.y() <= end_point.y() else "up"
-
+    # 箭头指向的平滑过渡
     def _build_arrow_transition(self, predecessor_id, removed_id, successor_id):
         if predecessor_id is None:
             return self.anim.pause(60), None
-
+        # 获取当前箭头（前驱 → 被删节点）
         arrow = self.arrow_items.get((predecessor_id, removed_id))
         if arrow is None:
             return self.anim.pause(60), None
@@ -388,7 +394,6 @@ class LinkedListView(BaseStructureView):
         default_width = arrow.default_pen_width()
 
         seq = self.anim.sequential()
-
         # 与节点闪烁错开
         seq.addAnimation(self.anim.pause(40))
 
@@ -684,7 +689,7 @@ class LinkedListView(BaseStructureView):
                 setter=node_item.setFillColor,
                 start_color=original_color,
                 end_color=QColor("#4fc3f7"),
-                duration=250,
+                duration=400,
                 loops=1,
             )
 
@@ -829,6 +834,7 @@ class LinkedListView(BaseStructureView):
 
         return group if attached else None
 
+    # 计算新节点放置的位置
     def _pick_sparse_position(
         self,
         index=None,

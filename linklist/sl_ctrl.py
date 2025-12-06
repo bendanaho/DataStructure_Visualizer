@@ -208,15 +208,15 @@ class LinkedListController(QWidget):
         self._refresh_spins()
 
     def _on_insert(self):
-        index = self.insert_index_spin.value()
-        value_text = self.insert_value_edit.text().strip()
+        index = self.insert_index_spin.value()                  # 获取SpinBox的索引值
+        value_text = self.insert_value_edit.text().strip()      # 获取输入框的值
         if not value_text:
             value_text = "∅"
-        value = self._coerce_value(value_text)
-        inserted_id = self.model.insert(index, value)
+        value = self._coerce_value(value_text)                  # 转换为int/float/str类型
+        inserted_id = self.model.insert(index, value)           # ①调用模型层的插入方法
         snapshot = self.model.snapshot()
-        self.view.animate_insert(snapshot, inserted_id, index)
-        self._refresh_spins()
+        self.view.animate_insert(snapshot, inserted_id, index)  # ②调用视图层的绘制动画
+        self._refresh_spins()                                   # ③刷新UI控件状态
 
     def _on_update_value(self):
         if self.model.length == 0:
@@ -231,11 +231,11 @@ class LinkedListController(QWidget):
     def _on_delete(self):
         if self.model.length == 0:
             return
-        index = self.delete_index_spin.value()
-        removed = self.model.delete(index)
+        index = self.delete_index_spin.value()                      # 获取SpinBox的索引值
+        removed = self.model.delete(index)                          # 1. 模型层删除
         snapshot = self.model.snapshot()
-        self.view.animate_delete(snapshot, removed["id"], index)
-        self._refresh_spins()
+        self.view.animate_delete(snapshot, removed["id"], index)    # 2. 视图动画
+        self._refresh_spins()                                       # 3. 刷新UI控件状态
 
     def _handle_delete_from_node(self, index):
         self.delete_index_spin.setValue(index)

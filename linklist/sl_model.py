@@ -66,18 +66,19 @@ class LinkedListModel:
     def delete(self, index: int) -> Dict:
         if index < 0 or index >= self.length:
             raise IndexError("Index out of range")
-
+        # 1. 处理头节点删除
         if index == 0:
             removed_id = self.head
             self.head = self.nodes[removed_id]["next"]
+        # 2. 处理中间/尾部删除
         else:
             prev_id = self._node_id_at(index - 1)
             removed_id = self.nodes[prev_id]["next"]
             self.nodes[prev_id]["next"] = self.nodes[removed_id]["next"]
-
+        # 3. 清理节点并返回
         removed = self.nodes.pop(removed_id)
         self.length -= 1
-        return removed
+        return removed  # 返回被删除节点的信息
 
     def update_value(self, index: int, value):
         node_id = self._node_id_at(index)
