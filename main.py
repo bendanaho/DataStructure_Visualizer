@@ -22,6 +22,7 @@ from arrayviz.arr_ctrl import ArrayController
 from linklist.sl_ctrl import LinkedListController
 from stack.st_ctrl import StackController
 from bst.bst_ctrl import BSTController
+from huffman.huff_ctrl import HuffmanController
 
 
 class MainWindow(QMainWindow):
@@ -119,11 +120,13 @@ class MainWindow(QMainWindow):
         stack = StackController(self.global_ctrl)
         array = ArrayController(self.global_ctrl)
         bst = BSTController(self.global_ctrl)
+        huffman = HuffmanController(self.global_ctrl)
 
         self._add_controller("Linked List", linked_list)
         self._add_controller("Stack", stack)
         self._add_controller("Array", array)
         self._add_controller("BST", bst)
+        self._add_controller("Huffman", huffman)
 
     def _add_controller(self, name, controller):
         panel = controller.build_panel()

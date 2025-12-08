@@ -209,10 +209,10 @@ class LinkedListView(BaseStructureView):
         self._track_animation(seq, finalizer=_finalizer)
 
     def update_values(self, nodes):
-        """更新节点文字，如果值发生变化则触发闪烁提示。"""
+        # 1. 同步最新数据顺序
         self.order = [node["id"] for node in nodes]
         changed_items = []
-
+        # 2. 遍历所有节点，比较新旧值
         for info in nodes:
             node_item = self.node_items.get(info["id"])
             if not node_item:
@@ -222,38 +222,41 @@ class LinkedListView(BaseStructureView):
             value_changed = node_item.value() != new_value
             node_item.set_value(new_value)
 
-            if value_changed:
+            if value_changed: # 将发生变化的节点加入待动画列表
                 changed_items.append(node_item)
-
+        # 3. 如果没有变化，直接重绘箭头并返回
         if not changed_items:
             self._refresh_connectivity()
             return
-
+        # 4. 为每个变化节点创建并行闪烁动画
         flashes = [
             self.anim.flash_brush(
-                setter=item.setFillColor,
-                start_color=item.fillColor,
-                end_color=QColor("#4dd0e1"),
-                duration=360,
-                loops=2,
+                setter=item.setFillColor,       # 动画目标：填充色
+                start_color=item.fillColor,     # 起始颜色（原色）
+                end_color=QColor("#4dd0e1"),    # 结束颜色（青色）
+                duration=360,                   # 单次时长
+                loops=2,                        # 闪烁2次（青→原→青→原）
             )
             for item in changed_items
         ]
-
+        # 5. 所有闪烁动画并行执行
         group = self.anim.parallel(*flashes)
+        # 6. 动画结束后重建箭头
         self._track_animation(group, finalizer=self._refresh_connectivity)
 
     # ---------- Helpers ----------
-
+    """根据节点ID查找其在链表中的索引位置。"""
     def index_of(self, node_id):
         return self.order.index(node_id) if node_id in self.order else -1
 
+    """插入动画完全结束后调用的回调函数，用于永久化插入操作"""
     def _finalize_insert(self, nodes, new_node, index):
         self.order.insert(index, new_node.node_id)
         self.node_items[new_node.node_id] = new_node
         self.order = [node["id"] for node in nodes]
         self._refresh_connectivity()
 
+    """删除动画完全结束后调用的回调函数，用于彻底清理被删除的节点"""
     def _finalize_delete(self, nodes, removed_id):
         node = self.node_items.pop(removed_id, None)
         if node:
@@ -261,16 +264,17 @@ class LinkedListView(BaseStructureView):
         self.order = [node["id"] for node in nodes]
         self._refresh_connectivity()
 
+    """根据当前节点顺序完整重建所有箭头连接"""
     def _rebuild_arrows(self):
+        # 清空现有箭头
         self._clear_arrows()
-
+        # 链表节点数小于2时，无需箭头
         if len(self.order) < 2:
             return
 
         centers = self._compute_node_centers()
         if len(centers) < 2:
             return
-
         classifications = self._classify_nodes_by_height(centers)
 
         for i in range(len(self.order) - 1):
@@ -278,6 +282,7 @@ class LinkedListView(BaseStructureView):
             end_id = self.order[i + 1]
             if start_id not in self.node_items or end_id not in self.node_items:
                 continue
+            # 决定箭头弧线方向
             orientation = self._decide_arc_orientation(
                 start_id, end_id, classifications, centers
             )
