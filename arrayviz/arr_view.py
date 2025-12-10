@@ -410,7 +410,7 @@ class ArrayCellItem(QGraphicsObject):
         super().__init__()
         self.node_id = node_id
         self._value = str(value)
-        self.fillColor = QColor("#e9e9ef")
+        self.fillColor = QColor("#b8b8d6")
         self.strokeColor = QColor("#4a4a52")
         self.textColor = QColor("#1f1f24")
         self.setZValue(2)
@@ -466,8 +466,8 @@ class ArraySlotItem(QGraphicsObject):
 
     def __init__(self):
         super().__init__()
-        self.fillColor = QColor("#ffffff")
-        self.strokeColor = QColor("#cfd8dc")
+        self.fillColor = QColor("#f6f6fd")
+        self.strokeColor = QColor("#74828a")
 
     def boundingRect(self):
         return QRectF(0, 0, self.width, self.height)
