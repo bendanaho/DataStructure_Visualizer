@@ -315,7 +315,10 @@ class BSTView(BaseStructureView):
 
     def _compute_layout(self, snapshot):
         """
-        使用中序编号决定横坐标，深度决定纵坐标，保证节点间距随层级递增。
+        使用基于子树宽度的布局算法，确保：
+        1. 父节点始终位于其所有子节点的水平中心
+        2. 左子树完全在父节点左侧，右子树完全在父节点右侧
+        3. 不会出现连线向内凹的情况
         """
         root_id = snapshot.get("root")
         if root_id is None:
@@ -323,29 +326,83 @@ class BSTView(BaseStructureView):
 
         tree = {node["id"]: node for node in snapshot["nodes"]}
         positions: Dict[int, QPointF] = {}
-        x_counter = [0]
-        h_gap = 150
-        v_gap = 120
 
-        def inorder(node_id, depth):
+        h_gap = 90  # 相邻节点之间的最小水平间距（增大以使连线角度更大）
+        v_gap = 130  # 垂直层级间距（减小以使连线角度更大）
+        node_width = BSTNodeItem.width
+        min_horizontal_offset = 60  # 单子节点时的最小水平偏移量
+
+        # 第一步：计算每个子树的宽度（以节点数量为基础）
+        subtree_width: Dict[int, float] = {}
+
+        def compute_width(node_id: Optional[int]) -> float:
+            if node_id is None:
+                return 0
+            node = tree.get(node_id)
+            if node is None:
+                return 0
+
+            left_width = compute_width(node["left"])
+            right_width = compute_width(node["right"])
+
+            # 子树宽度 = 左子树宽度 + 右子树宽度 + 节点本身占用的空间
+            if left_width == 0 and right_width == 0:
+                width = node_width
+            else:
+                width = left_width + right_width
+                if left_width > 0 and right_width > 0:
+                    width += h_gap
+                elif left_width == 0 and right_width > 0:
+                    width = max(node_width / 2 + min_horizontal_offset, right_width + node_width / 2 + h_gap / 2)
+                elif right_width == 0 and left_width > 0:
+                    width = max(node_width / 2 + min_horizontal_offset, left_width + node_width / 2 + h_gap / 2)
+
+            subtree_width[node_id] = width
+            return width
+
+        compute_width(root_id)
+
+        # 第二步：根据子树宽度分配位置
+        def assign_positions(node_id: Optional[int], x_center: float, depth: int):
             if node_id is None:
                 return
-            inorder(tree[node_id]["left"], depth + 1)
-            x = x_counter[0] * h_gap
+            node = tree.get(node_id)
+            if node is None:
+                return
+
             y = depth * v_gap
-            positions[node_id] = QPointF(x, y)
-            x_counter[0] += 1
-            inorder(tree[node_id]["right"], depth + 1)
+            positions[node_id] = QPointF(x_center - node_width / 2, y)
 
-        inorder(root_id, 0)
+            left_id = node["left"]
+            right_id = node["right"]
+            left_w = subtree_width.get(left_id, 0) if left_id else 0
+            right_w = subtree_width.get(right_id, 0) if right_id else 0
 
-        if not positions:
-            return {}
+            if left_id is not None and right_id is not None:
+                # 两个子节点都存在
+                left_center = x_center - h_gap / 2 - left_w / 2
+                right_center = x_center + h_gap / 2 + right_w / 2
+                assign_positions(left_id, left_center, depth + 1)
+                assign_positions(right_id, right_center, depth + 1)
+            elif left_id is not None:
+                # 只有左子节点：使用较大的水平偏移
+                left_center = x_center - min_horizontal_offset
+                assign_positions(left_id, left_center, depth + 1)
+            elif right_id is not None:
+                # 只有右子节点：使用较大的水平偏移
+                right_center = x_center + min_horizontal_offset
+                assign_positions(right_id, right_center, depth + 1)
 
-        total = x_counter[0]
-        offset = ((total - 1) * h_gap) / 2.0
-        for node_id, point in positions.items():
-            positions[node_id] = QPointF(point.x() - offset, point.y() - 40)
+        assign_positions(root_id, 0, 0)
+
+        # 第三步：调整垂直偏移
+        if positions:
+            min_y = min(p.y() for p in positions.values())
+            for node_id in positions:
+                positions[node_id] = QPointF(
+                    positions[node_id].x(),
+                    positions[node_id].y() - min_y - 40
+                )
 
         return positions
 
