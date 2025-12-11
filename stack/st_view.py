@@ -133,7 +133,7 @@ class StackView(BaseStructureView):
 
     def relayout_stack(self, stack_snapshot):
         animations = []
-        for idx, info in enumerate(reversed(stack_snapshot)):
+        for idx, info in enumerate(stack_snapshot):
             node_id = info["id"]
             node = self.nodes.get(node_id)
             if not node:
@@ -521,3 +521,38 @@ class StackContainerItem(QGraphicsObject):
         painter.drawLine(inner.topLeft(), inner.bottomLeft())
         painter.drawLine(inner.bottomLeft(), inner.bottomRight())
         painter.drawLine(inner.bottomRight(), inner.topRight())
+
+
+class StackViewWithPersistence(StackView):
+    saveRequested = pyqtSignal()
+    loadRequested = pyqtSignal()
+
+    def _show_background_menu(self, screen_pos):
+        if isinstance(screen_pos, QPointF):
+            screen_pos = screen_pos.toPoint()
+
+        menu = QMenu()
+        open_action = menu.addAction("Open From File…")
+        save_action = menu.addAction("Save To File…")
+        menu.addSeparator()
+        clear_pop_action = menu.addAction("Clear Pop")
+        clear_all_action = menu.addAction("Clear All")
+        chosen = menu.exec_(screen_pos)
+
+        if chosen == open_action:
+            self.loadRequested.emit()
+        elif chosen == save_action:
+            self.saveRequested.emit()
+        elif chosen == clear_pop_action:
+            self._clear_pop_history()
+        elif chosen == clear_all_action:
+            self._cancel_pending_animations()
+            self._clear_pop_history()
+            self.clearAllRequested.emit()
+
+    def export_popped_values(self):
+        return list(self.popped_values)
+
+    def load_popped_values(self, values):
+        self.popped_values = list(values or [])
+        self._update_output_text()

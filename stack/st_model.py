@@ -25,3 +25,8 @@ class StackModel:
 
     def __len__(self):
         return len(self._items)
+
+    def load_snapshot(self, nodes):
+        self._items = [dict(id=item["id"], value=item["value"]) for item in nodes]
+        max_id = max((item["id"] for item in self._items), default=-1)
+        self._id_iter = itertools.count(max_id + 1)

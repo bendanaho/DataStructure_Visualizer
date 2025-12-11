@@ -15,8 +15,11 @@ from PyQt5.QtWidgets import (
 
 from core.global_ctrl import GlobalController
 from bst.bst_model import BSTModel
-    # (路径以你创建的模块名为准)
 from bst.bst_view import BSTView
+from bst.bst_view import BSTViewWithPersistence
+import json
+from pathlib import Path
+from PyQt5.QtWidgets import QFileDialog
 
 
 class BSTController(QWidget):
@@ -27,7 +30,7 @@ class BSTController(QWidget):
     def __init__(self, global_ctrl: GlobalController):
         super().__init__()
         self.model = BSTModel()
-        self.view = BSTView(global_ctrl)
+        self.view = BSTViewWithPersistence(global_ctrl)
         self._panel_locked = False
 
         self._build_inputs()
@@ -36,8 +39,87 @@ class BSTController(QWidget):
         self.view.interactionLocked.connect(self._on_lock_state)
         self.view.deleteRequested.connect(self._handle_delete_from_view)
         self.view.findRequested.connect(self._handle_find_from_view)
+        self.view.clearAllRequested.connect(self._on_clear_all_requested)
+        self.view.saveRequested.connect(self._save_to_file)
+        self.view.loadRequested.connect(self._load_from_file)
 
         self._refresh_inputs()
+
+    def _save_to_file(self):
+        snapshot = self.model.snapshot()
+        if not snapshot["nodes"]:
+            QMessageBox.information(self, "BST", "当前树为空，无需保存。")
+            return
+
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "bst"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "bst.json")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save BST",
+            suggested,
+            "BST (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        payload = {
+            "schema": "pyqt_ds_visualizer",
+            "version": 1,
+            "structure": "bst",
+            "snapshot": snapshot,
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            QMessageBox.critical(self, "Save Failed", f"无法写入文件：\n{exc}")
+            return
+
+        QMessageBox.information(self, "BST", f"已保存到：\n{path}")
+
+    def _load_from_file(self):
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "bst"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open BST",
+            str(base_dir),
+            "BST (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(self, "Open Failed", f"无法读取文件：\n{exc}")
+            return
+
+        if (
+            payload.get("schema") != "pyqt_ds_visualizer"
+            or payload.get("structure") != "bst"
+            or "snapshot" not in payload
+        ):
+            QMessageBox.critical(self, "Open Failed", "文件格式不受支持。")
+            return
+
+        snapshot = payload["snapshot"]
+        self.model.load_snapshot(snapshot)
+
+        if snapshot["nodes"]:
+            self.view.animate_build(snapshot, speed_scale=5)
+        else:
+            self.view.reset()
+
+        self._refresh_inputs()
+        QMessageBox.information(self, "BST", "文件加载完成。")
 
     # ---------- UI 构建 ----------
     def _build_inputs(self):

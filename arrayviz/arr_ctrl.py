@@ -15,6 +15,11 @@ from PyQt5.QtWidgets import (
 from core.global_ctrl import GlobalController
 from arrayviz.arr_model import ArrayModel
 from arrayviz.arr_view import ArrayView
+from arrayviz.arr_view import ArrayViewWithPersistence
+
+import json
+from pathlib import Path
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 
 class ArrayController(QWidget):
@@ -25,7 +30,7 @@ class ArrayController(QWidget):
     def __init__(self, global_ctrl: GlobalController):
         super().__init__()
         self.model = ArrayModel()
-        self.view = ArrayView(global_ctrl)
+        self.view = ArrayViewWithPersistence(global_ctrl)
         self.panel_index = -1
         self._panel_locked = False
 
@@ -36,8 +41,87 @@ class ArrayController(QWidget):
         self.view.deleteRequested.connect(self._handle_delete_from_view)
         self.view.editRequested.connect(self._handle_edit_from_view)
         self.view.clearAllRequested.connect(self._on_clear_all_requested)
+        self.view.saveRequested.connect(self._save_to_file)
+        self.view.loadRequested.connect(self._load_from_file)
 
         self._refresh_spins()
+
+    def _save_to_file(self):
+        snapshot = self.model.snapshot()
+        if not snapshot:
+            QMessageBox.information(self, "Array", "当前数组为空，无需保存。")
+            return
+
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "array"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "array.json")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Array",
+            suggested,
+            "Array (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        payload = {
+            "schema": "pyqt_ds_visualizer",
+            "version": 1,
+            "structure": "array",
+            "items": snapshot,
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            QMessageBox.critical(self, "Save Failed", f"无法写入文件：\n{exc}")
+            return
+
+        QMessageBox.information(self, "Array", f"已保存到：\n{path}")
+
+    def _load_from_file(self):
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "array"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Array",
+            str(base_dir),
+            "Array (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(self, "Open Failed", f"无法读取文件：\n{exc}")
+            return
+
+        if (
+            payload.get("schema") != "pyqt_ds_visualizer"
+            or payload.get("structure") != "array"
+            or "items" not in payload
+        ):
+            QMessageBox.critical(self, "Open Failed", "文件格式不受支持。")
+            return
+
+        items = payload["items"]
+        self.model.load_snapshot(items)
+
+        snapshot = self.model.snapshot()
+        if snapshot:
+            self.view.animate_build(snapshot, speed_scale=4)
+        else:
+            self.view.reset()
+
+        self._refresh_spins()
+        QMessageBox.information(self, "Array", "文件加载完成。")
 
     # ---------- Panel UI ----------
 

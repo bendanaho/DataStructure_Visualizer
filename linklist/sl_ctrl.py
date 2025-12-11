@@ -14,8 +14,10 @@ from PyQt5.QtWidgets import (
 
 from core.global_ctrl import GlobalController
 from linklist.sl_model import LinkedListModel
-from linklist.sl_view import LinkedListView
-
+from linklist.sl_view import LinkedListViewWithPersistence
+import json
+from pathlib import Path
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 class LinkedListController(QWidget):
     """
@@ -25,7 +27,7 @@ class LinkedListController(QWidget):
     def __init__(self, global_ctrl: GlobalController):
         super().__init__()
         self.model = LinkedListModel()
-        self.view = LinkedListView(global_ctrl)
+        self.view = LinkedListViewWithPersistence(global_ctrl)
         self.panel_index = -1
         self._panel_locked = False
 
@@ -36,7 +38,83 @@ class LinkedListController(QWidget):
         self.view.deleteRequested.connect(self._handle_delete_from_node)
         self.view.editRequested.connect(self._handle_edit_from_node)
         self.view.clearAllRequested.connect(self._on_clear_all_requested)
+        self.view.saveRequested.connect(self._save_to_file)
+        self.view.loadRequested.connect(self._load_from_file)
 
+        self._refresh_spins()
+
+    def _save_to_file(self):
+        if self.model.length == 0:
+            QMessageBox.information(self, "Save Linked List", "当前链表为空，无需保存。")
+            return
+
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "linklist"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "linked_list.json")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Linked List",
+            suggested,
+            "Linked List (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        payload = {
+            "schema": "pyqt_ds_visualizer",
+            "version": 1,
+            "structure": "linked_list",
+            "nodes": self.model.snapshot(),
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            QMessageBox.critical(self, "Save Failed", f"无法写入文件：\n{exc}")
+            return
+
+        QMessageBox.information(self, "Save Linked List", f"已保存到：\n{path}")
+
+    def _load_from_file(self):
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "linklist"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Linked List",
+            str(base_dir),
+            "Linked List (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(self, "Open Failed", f"无法读取文件：\n{exc}")
+            return
+
+        if (
+            payload.get("schema") != "pyqt_ds_visualizer"
+            or payload.get("structure") != "linked_list"
+        ):
+            QMessageBox.critical(self, "Open Failed", "文件格式不受支持。")
+            return
+
+        nodes = payload.get("nodes", [])
+        values = [node.get("value") for node in nodes]
+
+        self.model.create_from_iterable(values)
+        snapshot = self.model.snapshot()
+        if snapshot:
+            self.view.animate_build(snapshot, speed_scale=5)
+        else:
+            self.view.reset()
         self._refresh_spins()
 
     # ---------- Panel UI ----------

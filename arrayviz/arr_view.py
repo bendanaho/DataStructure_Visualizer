@@ -52,12 +52,17 @@ class ArrayView(BaseStructureView):
         self._rebuild_slots()
         self._auto_scale_view()
 
-    def animate_build(self, snapshot):
+    def animate_build(self, snapshot, speed_scale: float = 1.0):
         self.reset()
         self._ensure_capacity(len(snapshot))
         if not snapshot:
             self._finalize_snapshot(snapshot)
             return
+
+        speed_scale = max(0.1, float(speed_scale))
+
+        def scaled(base_ms: int) -> int:
+            return max(1, int(base_ms / speed_scale))
 
         sequential = self.anim.sequential()
         for idx, info in enumerate(snapshot):
@@ -67,11 +72,11 @@ class ArrayView(BaseStructureView):
             cell.setPos(spawn)
             cell.setOpacity(0.0)
 
-            drop = self.anim.move_item(cell, target, duration=520)
-            fade = self.anim.fade_item(cell, 0.0, 1.0, duration=520)
+            drop = self.anim.move_item(cell, target, duration=scaled(520))
+            fade = self.anim.fade_item(cell, 0.0, 1.0, duration=scaled(520))
             sequential.addAnimation(self.anim.parallel(drop, fade))
 
-        sequential.addAnimation(self.anim.pause(120))
+        sequential.addAnimation(self.anim.pause(scaled(120)))
         self._track_animation(
             sequential, finalizer=lambda: self._finalize_snapshot(snapshot)
         )
@@ -477,3 +482,26 @@ class ArraySlotItem(QGraphicsObject):
         painter.setPen(QPen(self.strokeColor, 1.6))
         painter.setBrush(QBrush(self.fillColor))
         painter.drawRect(self.boundingRect())
+
+
+class ArrayViewWithPersistence(ArrayView):
+    saveRequested = pyqtSignal()
+    loadRequested = pyqtSignal()
+
+    def _show_background_menu(self, screen_pos):
+        if isinstance(screen_pos, QPointF):
+            screen_pos = screen_pos.toPoint()
+
+        menu = QMenu()
+        open_action = menu.addAction("Open From File…")
+        save_action = menu.addAction("Save To File…")
+        menu.addSeparator()
+        clear_action = menu.addAction("Clear Array")
+        chosen = menu.exec_(screen_pos)
+
+        if chosen == open_action:
+            self.loadRequested.emit()
+        elif chosen == save_action:
+            self.saveRequested.emit()
+        elif chosen == clear_action:
+            self.clearAllRequested.emit()

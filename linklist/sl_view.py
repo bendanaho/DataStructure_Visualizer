@@ -52,11 +52,19 @@ class LinkedListView(BaseStructureView):
         self._head_label = self._create_head_label()
         self.scene.addItem(self._head_label)
 
-    def animate_build(self, nodes):
+    def animate_build(self, nodes, speed_scale: float = 1.0):
         """
         nodes: ordered list of dicts {id, value}
+        speed_scale > 1 表示更快（例如 1.5 → 时长除以 1.5）
         """
         self.reset()
+        if not nodes:
+            return
+
+        speed_scale = max(0.1, float(speed_scale))
+
+        def scaled(base_ms: int) -> int:
+            return max(1, int(base_ms / speed_scale))
 
         sequential = self.anim.sequential()
 
@@ -76,12 +84,12 @@ class LinkedListView(BaseStructureView):
             self.node_items[info["id"]] = node_item
             self.order.append(info["id"])
 
-            fade = self.anim.fade_item(node_item, 0, 1, duration=600)
-            drop = self.anim.move_item(node_item, target_position, duration=800)
+            fade = self.anim.fade_item(node_item, 0, 1, duration=scaled(600))
+            drop = self.anim.move_item(node_item, target_position, duration=scaled(800))
             sequential.addAnimation(self.anim.parallel(fade, drop))
 
         self._auto_scale_view()
-        sequential.addAnimation(self.anim.pause(150))
+        sequential.addAnimation(self.anim.pause(scaled(150)))
         self._track_animation(sequential, finalizer=self._refresh_connectivity)
 
     def animate_insert(self, nodes, inserted_id, index):
@@ -1264,3 +1272,27 @@ class ArrowItem(QGraphicsPathItem):
         painter.setPen(self.pen())
         painter.drawPath(self.path())
         painter.drawPath(self._arrow_head_path)
+
+
+class LinkedListViewWithPersistence(LinkedListView):
+    saveRequested = pyqtSignal()
+    loadRequested = pyqtSignal()
+
+    def _show_background_menu(self, screen_pos):
+        if isinstance(screen_pos, QPointF):
+            screen_pos = screen_pos.toPoint()
+
+        menu = QMenu()
+        open_action = menu.addAction("Open From File…")
+        save_action = menu.addAction("Save To File…")
+        menu.addSeparator()
+        clear_action = menu.addAction("Clear All")
+
+        chosen = menu.exec_(screen_pos)
+
+        if chosen == open_action:
+            self.loadRequested.emit()
+        elif chosen == save_action:
+            self.saveRequested.emit()
+        elif chosen == clear_action:
+            self.clearAllRequested.emit()

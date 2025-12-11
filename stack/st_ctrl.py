@@ -9,8 +9,13 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+import json
+from pathlib import Path
+from PyQt5.QtWidgets import QFileDialog
+
 from stack.st_model import StackModel
 from stack.st_view import StackView
+from stack.st_view import StackViewWithPersistence
 
 
 class StackController(QWidget):
@@ -19,11 +24,91 @@ class StackController(QWidget):
     def __init__(self, global_ctrl):
         super().__init__()
         self.model = StackModel()
-        self.view = StackView(global_ctrl)
+        self.view = StackViewWithPersistence(global_ctrl)
         self.panel_index = -1
         self.panel = self._build_panel()
         self.view.interactionLocked.connect(self._toggle_controls)
         self.view.clearAllRequested.connect(self._on_clear_all_requested)
+        self.view.saveRequested.connect(self._save_to_file)
+        self.view.loadRequested.connect(self._load_from_file)
+
+    def _save_to_file(self):
+        snapshot = self.model.snapshot()
+        if not snapshot:
+            QMessageBox.information(self, "Stack", "当前栈为空，无需保存。")
+            return
+
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "stack"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "stack.json")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Stack",
+            suggested,
+            "Stack (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        payload = {
+            "schema": "pyqt_ds_visualizer",
+            "version": 1,
+            "structure": "stack",
+            "nodes": snapshot,
+            "popped_values": self.view.export_popped_values(),
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            QMessageBox.critical(self, "Save Failed", f"无法写入文件：\n{exc}")
+            return
+
+        QMessageBox.information(self, "Stack", f"已保存到：\n{path}")
+
+    def _load_from_file(self):
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "stack"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Stack",
+            str(base_dir),
+            "Stack (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(self, "Open Failed", f"无法读取文件：\n{exc}")
+            return
+
+        if (
+                payload.get("schema") != "pyqt_ds_visualizer"
+                or payload.get("structure") != "stack"
+        ):
+            QMessageBox.critical(self, "Open Failed", "文件格式不受支持。")
+            return
+
+        nodes = payload.get("nodes", [])
+        popped_values = payload.get("popped_values", [])
+
+        self.model.load_snapshot(nodes)
+        snapshot = self.model.snapshot()
+
+        self.view.reset()
+        if snapshot:
+            self.view.relayout_stack(snapshot)
+        self.view.load_popped_values(popped_values)
+
+        QMessageBox.information(self, "Stack", "文件加载完成。")
 
     def _build_panel(self):
         container = QWidget()

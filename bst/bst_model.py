@@ -19,6 +19,28 @@ class BSTModel:
     def clear(self):
         self._nodes.clear()
         self._root = None
+        self._id_iter = itertools.count()
+
+    def load_snapshot(self, snapshot):
+        self.clear()
+        nodes = snapshot.get("nodes", [])
+        root = snapshot.get("root")
+
+        rebuilt = {}
+        max_id = -1
+        for info in nodes:
+            node_id = info["id"]
+            rebuilt[node_id] = {
+                "id": node_id,
+                "value": info["value"],
+                "left": info["left"],
+                "right": info["right"],
+            }
+            max_id = max(max_id, node_id)
+
+        self._nodes = rebuilt
+        self._root = root if root in rebuilt or root is None else None
+        self._id_iter = itertools.count(max_id + 1 if max_id >= 0 else 0)
 
     def create_from_iterable(self, values):
         self.clear()

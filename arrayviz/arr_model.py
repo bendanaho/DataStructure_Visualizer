@@ -17,6 +17,7 @@ class ArrayModel:
 
     def clear(self):
         self._items.clear()
+        self._id_iter = itertools.count()
 
     def _new_cell(self, value):
         cell_id = next(self._id_iter)
@@ -52,3 +53,15 @@ class ArrayModel:
 
     def snapshot(self):
         return [{"id": cell["id"], "value": cell["value"]} for cell in self._items]
+
+    def load_snapshot(self, snapshot):
+        self.clear()
+        items = snapshot or []
+        rebuilt = []
+        max_id = -1
+        for cell in items:
+            node_id = int(cell["id"])
+            rebuilt.append({"id": node_id, "value": cell["value"]})
+            max_id = max(max_id, node_id)
+        self._items = rebuilt
+        self._id_iter = itertools.count(max_id + 1 if max_id >= 0 else 0)

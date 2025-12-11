@@ -36,10 +36,15 @@ class BSTView(BaseStructureView):
         self.edge_items.clear()
         self._last_snapshot = {"root": None, "nodes": []}
 
-    def animate_build(self, snapshot):
+    def animate_build(self, snapshot, speed_scale: float = 1.0):
         self.reset()
         if not snapshot["nodes"]:
             return
+
+        speed_scale = max(0.1, float(speed_scale))
+
+        def scaled(base_ms: int) -> int:
+            return max(1, int(base_ms / speed_scale))
 
         positions = self._compute_layout(snapshot)
         level_order = self._level_order(snapshot)
@@ -53,11 +58,11 @@ class BSTView(BaseStructureView):
             node_item.setPos(spawn)
             node_item.setOpacity(0.0)
 
-            drop = self.anim.move_item(node_item, target, duration=560)
-            fade = self.anim.fade_item(node_item, 0.0, 1.0, duration=560)
+            drop = self.anim.move_item(node_item, target, duration=scaled(560))
+            fade = self.anim.fade_item(node_item, 0.0, 1.0, duration=scaled(560))
             sequential.addAnimation(self.anim.parallel(drop, fade))
 
-        sequential.addAnimation(self.anim.pause(140))
+        sequential.addAnimation(self.anim.pause(scaled(140)))
         self._track_animation(
             sequential,
             finalizer=lambda: self._finalize_snapshot(snapshot, positions),
@@ -883,3 +888,27 @@ class EdgeFlashItem(QGraphicsObject):
         painter.setRenderHint(painter.Antialiasing)
         painter.setPen(self._pen)
         painter.drawPath(self._path)
+
+class BSTViewWithPersistence(BSTView):
+    clearAllRequested = pyqtSignal()
+    saveRequested = pyqtSignal()
+    loadRequested = pyqtSignal()
+
+    def _show_background_menu(self, screen_pos):
+        if isinstance(screen_pos, QPointF):
+            screen_pos = screen_pos.toPoint()
+
+        menu = QMenu()
+        open_action = menu.addAction("Open From File…")
+        save_action = menu.addAction("Save To File…")
+        menu.addSeparator()
+        clear_action = menu.addAction("Clear Tree")
+        chosen = menu.exec_(screen_pos)
+
+        if chosen == open_action:
+            self.loadRequested.emit()
+        elif chosen == save_action:
+            self.saveRequested.emit()
+        elif chosen == clear_action:
+            self.stop_all_animations()
+            self.clearAllRequested.emit()

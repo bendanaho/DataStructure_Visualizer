@@ -1,9 +1,6 @@
 .idea/
-
 .venv/
-
 __pycache__/
-
 prompt.txt
-
 TODO.txt
+save_file/
