@@ -112,6 +112,7 @@ class BSTView(BaseStructureView):
             )
             return
 
+        # 第三阶段：构建路径与核心循环
         steps = self._build_insert_steps(
             current_tree,
             current_root_id,

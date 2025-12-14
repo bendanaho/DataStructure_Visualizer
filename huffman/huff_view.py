@@ -1,8 +1,8 @@
 import math
 from typing import Dict, List, Optional, Set, Tuple
 
-from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QPen, QPainterPath
+from PyQt5.QtCore import QPointF, QRectF, Qt, pyqtSignal, QEvent
+from PyQt5.QtGui import QColor, QBrush, QPen, QPainterPath, QTransform
 from PyQt5.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
@@ -22,8 +22,6 @@ class HuffmanView(BaseStructureView):
 
     def __init__(self, global_ctrl):
         super().__init__(global_ctrl)
-        self.scene.installEventFilter(self)
-
         self.node_items: Dict[int, HuffmanNodeItem] = {}
         self.edge_items: Dict[Tuple[int, int], HuffmanEdgeItem] = {}
         self._baseline_positions: Dict[int, QPointF] = {}
@@ -32,6 +30,9 @@ class HuffmanView(BaseStructureView):
         self._node_gap_x = 40
         self._node_gap_y = 120
         self._baseline_y = 260
+
+        # 安装场景事件过滤器，监听背景右键菜单
+        self.scene.installEventFilter(self)
 
     # ---------- Public API ----------
 
@@ -46,14 +47,13 @@ class HuffmanView(BaseStructureView):
     def is_busy(self) -> bool:
         return bool(self._running)
 
-    def render_snapshot(self, snapshot: Dict):
-        """直接渲染给定快照（用于文件读取等场景）。"""
-        if not snapshot:
+    def render_snapshot(self, snapshot: Optional[Dict]):
+        """外部直接渲染快照（用于载入文件后恢复视图）。"""
+        if not snapshot or not snapshot.get("nodes"):
             self.reset()
             return
-        self.stop_all_animations()
         positions = self._compute_layout(snapshot)
-        self._finalize_snapshot(snapshot, positions)
+        self._finalize_snapshot(snapshot, positions=positions)
 
     def animate_initialize(self, snapshot: Dict):
         self.reset()
@@ -182,10 +182,9 @@ class HuffmanView(BaseStructureView):
         width_map = self._subtree_widths(before_snapshot)
         left_width = width_map.get(left_id, HuffmanNodeItem.width)
         right_width = width_map.get(right_id, HuffmanNodeItem.width)
-        total_gap = left_width + right_width + self._node_gap_x
-
-        left_center = meeting_center_x - total_gap / 2 + left_width / 2
-        right_center = meeting_center_x + total_gap / 2 - right_width / 2
+        center_gap = left_width / 2 + right_width / 2 + 2*self._node_gap_x
+        left_center = meeting_center_x - center_gap / 2
+        right_center = meeting_center_x + center_gap / 2
 
         left_target = QPointF(left_center - HuffmanNodeItem.width / 2, meeting_y)
         right_target = QPointF(right_center - HuffmanNodeItem.width / 2, meeting_y)
@@ -223,6 +222,26 @@ class HuffmanView(BaseStructureView):
 
         self._track_animation(sequence, finalizer=_finalize)
 
+    # ---------- Event filtering (context menu) ----------
+
+    def eventFilter(self, watched, event):
+        if watched is self.scene and event.type() == QEvent.GraphicsSceneContextMenu:
+            view = self.scene.views()[0] if self.scene.views() else None
+            transform = view.transform() if view else QTransform()
+            item = self.scene.itemAt(event.scenePos(), transform)
+            if item is None:
+                menu = QMenu()
+                open_action = menu.addAction("打开快照…")
+                save_action = menu.addAction("保存快照…")
+                chosen = menu.exec_(event.screenPos())
+                if chosen == open_action:
+                    self.loadRequested.emit()
+                elif chosen == save_action:
+                    self.saveRequested.emit()
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
     # ---------- Internal helpers ----------
 
     def _finalize_snapshot(self, snapshot: Dict, positions: Optional[Dict[int, QPointF]] = None):
@@ -246,6 +265,18 @@ class HuffmanView(BaseStructureView):
 
         self._rebuild_edges(snapshot)
         self._last_snapshot = snapshot
+
+        # 更新基线位置，方便后续排序动画
+        roots = snapshot.get("roots", [])
+        baseline_update: Dict[int, QPointF] = {}
+        for root_id in roots:
+            pos = positions.get(root_id)
+            if pos:
+                baseline_update[root_id] = QPointF(pos)
+        if baseline_update:
+            self._baseline_positions = baseline_update
+        else:
+            self._baseline_positions = self._compute_baseline_positions(roots)
 
         leaf_codes = self._compute_leaf_codes(snapshot)
         for node_id, item in self.node_items.items():
@@ -492,30 +523,6 @@ class HuffmanView(BaseStructureView):
 
         dfs(roots[0], "")
         return codes
-
-    def _show_background_menu(self, screen_pos):
-        if isinstance(screen_pos, QPointF):
-            screen_pos = screen_pos.toPoint()
-        menu = QMenu()
-        open_action = menu.addAction("Open From File…")
-        save_action = menu.addAction("Save To File…")
-        chosen = menu.exec_(screen_pos)
-        if chosen == open_action:
-            self.loadRequested.emit()
-        elif chosen == save_action:
-            self.saveRequested.emit()
-
-    def eventFilter(self, watched, event):
-        if watched is self.scene and event.type() == QEvent.GraphicsSceneContextMenu:
-            item = self.scene.itemAt(
-                event.scenePos(),
-                self._canvas.transform() if self._canvas else None,
-            )
-            if item is None:
-                self._show_background_menu(event.screenPos())
-                event.accept()
-                return True
-        return super().eventFilter(watched, event)
 
 
 class HuffmanNodeItem(QGraphicsObject):

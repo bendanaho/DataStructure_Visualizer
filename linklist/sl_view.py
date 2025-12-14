@@ -6,7 +6,7 @@ from PyQt5.QtCore import (
     QVariantAnimation,
     QRectF,
     QEvent,
-    QTimer,
+    QTimer, QSequentialAnimationGroup,
 )
 from PyQt5.QtGui import QColor, QBrush, QPainterPath, QPen, QTransform, QFont, QFontMetrics
 from PyQt5.QtWidgets import (
@@ -686,7 +686,8 @@ class LinkedListView(BaseStructureView):
             self.scene.removeItem(arrow)
         self.arrow_items.clear()
 
-    def _build_traversal_anim(self, index):
+    def _build_traversal_anim(self,
+                              index: object) -> QVariantAnimation | QVariantAnimation | QSequentialAnimationGroup | QSequentialAnimationGroup:
         if index < 0:
             return self.anim.pause(50)
 

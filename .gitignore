@@ -4,3 +4,4 @@ __pycache__/
 prompt.txt
 TODO.txt
 save_file/
+.env
