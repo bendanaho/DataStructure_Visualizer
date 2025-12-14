@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsPathItem,
+    QGraphicsSimpleTextItem,
     QMenu,
 )
 
@@ -14,12 +15,10 @@ from core.base_view import BaseStructureView
 
 
 class HuffmanView(BaseStructureView):
-    """
-    三阶段可视化：
-    1. 数列依次飞入至底部；
-    2. 通过插入排序展示重排过程；
-    3. 按哈夫曼构建步骤反复选取最小节点，在中央合并并生成父节点，最后落位成树。
-    """
+    """负责哈夫曼森林的可视化、排序与合并动画。"""
+
+    saveRequested = pyqtSignal()
+    loadRequested = pyqtSignal()
 
     def __init__(self, global_ctrl):
         super().__init__(global_ctrl)
@@ -27,572 +26,484 @@ class HuffmanView(BaseStructureView):
 
         self.node_items: Dict[int, HuffmanNodeItem] = {}
         self.edge_items: Dict[Tuple[int, int], HuffmanEdgeItem] = {}
-        self.tree_structure: Dict[int, Dict[str, Optional[int]]] = {}
-        self.node_depths: Dict[int, int] = {}
-        self.leaf_counts: Dict[int, int] = {}
-        self.queue_order: List[int] = []
-        self.in_queue_ids: Set[int] = set()
+        self._baseline_positions: Dict[int, QPointF] = {}
+        self._last_snapshot: Dict = {"roots": [], "nodes": [], "stage": "idle"}
+        self._forest_spacing = 200      # 森林中相邻两棵树的距离（固定）
+        self._node_gap_x = 40
+        self._node_gap_y = 120
+        self._baseline_y = 260
 
-        self._queue_y = 240
-        self._queue_spacing = HuffmanNodeItem.width + 18
-        self._level_gap = 120
-        self._first_merge_centered = False
-
-    # ---------- 生命周期 ----------
+    # ---------- Public API ----------
 
     def reset(self):
         self.stop_all_animations()
-        # 逐条边断开 signal-slot，防止场景清空后访问悬空对象
-        for edge in list(self.edge_items.values()):
-            edge.dispose()
-            if edge.scene():
-                self.scene.removeItem(edge)
         self.scene.clear()
         self.node_items.clear()
         self.edge_items.clear()
-        self.tree_structure.clear()
-        self.node_depths.clear()
-        self.leaf_counts.clear()
-        self.queue_order.clear()
-        self.in_queue_ids.clear()
-        self._first_merge_centered = False
+        self._baseline_positions.clear()
+        self._last_snapshot = {"roots": [], "nodes": [], "stage": "idle"}
 
-    def play_process(self, timeline):
-        self.reset()
+    def is_busy(self) -> bool:
+        return bool(self._running)
 
-        initial = timeline.get("initial") or []
-        sorting = timeline.get("sorting") or []
-        building = timeline.get("building") or []
-        final_tree = timeline.get("final_tree")
-
-        sequence = self.anim.sequential()
-        if initial:
-            sequence.addAnimation(self._animate_initial_fly_in(initial))
-        if sorting:
-            sequence.addAnimation(self._animate_insertion_sort(sorting))
-        if building:
-            sequence.addAnimation(self._animate_build_phase(building, final_tree))
-        elif final_tree:
-            sequence.addAnimation(self._animate_final_layout(final_tree))
-
-        if sequence.animationCount() == 0:
+    def render_snapshot(self, snapshot: Dict):
+        """直接渲染给定快照（用于文件读取等场景）。"""
+        if not snapshot:
+            self.reset()
             return
-        self._track_animation(sequence, finalizer=self._auto_scale_view)
-
-    # ---------- 初始飞入 ----------
-
-    def _animate_initial_fly_in(self, nodes: List[Dict]):
-        self.queue_order = [info["id"] for info in nodes]
-        self.in_queue_ids = set(self.queue_order)
-
-        positions = self._queue_positions(len(nodes))
-        sequence = self.anim.sequential()
-
-        for idx, info in enumerate(nodes):
-            node_id = info["id"]
-            value = info["value"]
-            item = self._create_node_item(node_id, value)
-            start = QPointF(positions[idx].x(), positions[idx].y() - 220)
-            item.setPos(start)
-            item.setOpacity(0.0)
-
-            fly = self.anim.move_item(item, positions[idx], duration=420)
-            fade = self.anim.fade_item(item, 0.0, 1.0, duration=420)
-            sequence.addAnimation(self.anim.parallel(fly, fade))
-
-            self.tree_structure[node_id] = {"value": value, "left": None, "right": None}
-            self.node_depths[node_id] = 0
-            self.leaf_counts[node_id] = 1
-
-        return sequence
-
-    def _queue_positions(self, count: int):
-        if count == 0:
-            return []
-        offset = ((count - 1) * self._queue_spacing) / 2.0
-        return [
-            QPointF(idx * self._queue_spacing - offset, self._queue_y)
-            for idx in range(count)
-        ]
-
-    # ---------- 插入排序动画 ----------
-
-    def _animate_insertion_sort(self, steps: List[Dict]):
-        if not steps:
-            return self.anim.pause(0)
-
-        sequence = self.anim.sequential()
-        for step in steps:
-            sequence.addAnimation(self._animate_insert_step(step))
-        return sequence
-
-    def _animate_insert_step(self, step: Dict):
-        order_before = list(step["array_before"])
-        key_id = step["key_id"]
-        from_idx = step["from_index"]
-        insert_idx = step["insert_index"]
-
-        if order_before != self.queue_order:
-            self.queue_order = order_before[:]
-
-        if from_idx == insert_idx:
-            return self.anim.pause(0)
-
-        positions = self._queue_positions(len(order_before))
-        idx_pos = {idx: positions[idx] for idx in range(len(positions))}
-        hover_height = 120
-
-        key_item = self.node_items.get(key_id)
-        if not key_item:
-            return self.anim.pause(0)
-
-        raise_duration = 180        # 原 360 → 加速 2×
-        hover_duration = 160        # 原 320 → 加速 2×
-        shift_duration = 160        # 原 320 → 加速 2×
-        drop_duration = 180         # 原 360 → 加速 2×
-
-        sequence = self.anim.sequential()
-        raise_target = QPointF(idx_pos[from_idx].x(), idx_pos[from_idx].y() - hover_height)
-        sequence.addAnimation(self.anim.move_item(key_item, raise_target, duration=raise_duration))
-
-        hover_target = QPointF(idx_pos[insert_idx].x(), raise_target.y())
-        sequence.addAnimation(self.anim.move_item(key_item, hover_target, duration=hover_duration))
-
-        shift_motions = []
-        if insert_idx < from_idx:
-            for idx in range(insert_idx, from_idx):
-                current_id = order_before[idx]
-                if current_id == key_id:
-                    continue
-                item = self.node_items.get(current_id)
-                if not item:
-                    continue
-                target = QPointF(idx_pos[idx + 1].x(), self._queue_y)
-                shift_motions.append(self.anim.move_item(item, target, duration=shift_duration))
-        else:
-            for idx in range(from_idx + 1, insert_idx + 1):
-                current_id = order_before[idx]
-                item = self.node_items.get(current_id)
-                if not item:
-                    continue
-                target = QPointF(idx_pos[idx - 1].x(), self._queue_y)
-                shift_motions.append(self.anim.move_item(item, target, duration=shift_duration))
-
-        if shift_motions:
-            sequence.addAnimation(self.anim.parallel(*shift_motions))
-
-        drop_target = QPointF(idx_pos[insert_idx].x(), self._queue_y)
-        sequence.addAnimation(self.anim.move_item(key_item, drop_target, duration=drop_duration))
-
-        order_after = order_before[:]
-        value = order_after.pop(from_idx)
-        order_after.insert(insert_idx, value)
-        self.queue_order = order_after
-
-        return sequence
-
-    # ---------- 构建阶段动画 ----------
-
-    def _animate_build_phase(self, steps: List[Dict], final_snapshot: Optional[Dict]):
-        sequence = self.anim.sequential()
-        if not steps:
-            if final_snapshot:
-                sequence.addAnimation(self._animate_final_layout(final_snapshot))
-            return sequence
-
-        for step in steps:
-            sequence.addAnimation(self._animate_merge_step(step))
-
-        if final_snapshot:
-            sequence.addAnimation(self._animate_final_layout(final_snapshot))
-        return sequence
-
-    def _animate_merge_step(self, step: Dict):
-        left_id = step["left_id"]
-        right_id = step["right_id"]
-        geometry = self._determine_stage_positions(left_id, right_id)
-
-        sequence = self.anim.sequential()
-        sequence.addAnimation(
-            self.anim.parallel(
-                self._flash_node(left_id, QColor("#ff5252")),
-                self._flash_node(right_id, QColor("#ff5252")),
-            )
-        )
-
-        move_left = self._move_subtree_to_target(left_id, geometry["left_target"])
-        move_right = self._move_subtree_to_target(right_id, geometry["right_target"])
-        sequence.addAnimation(self.anim.parallel(move_left, move_right))
-
-        if not self._first_merge_centered:
-            sequence.addAnimation(self._ensure_stage_centered())
-            self._first_merge_centered = True
-
-        removed = False
-        for node_id in (left_id, right_id):
-            if node_id in self.in_queue_ids:
-                self.in_queue_ids.remove(node_id)
-                if node_id in self.queue_order:
-                    self.queue_order.remove(node_id)
-                    removed = True
-        if removed:
-            sequence.addAnimation(self._compress_queue())
-
-        sequence.addAnimation(self._animate_parent_creation(step["parent"], geometry["parent_pos"]))
-        sequence.addAnimation(self._animate_tree_relayout())
-        return sequence
-
-    def _determine_stage_positions(self, left_id: int, right_id: int):
-        """
-        计算合并阶段的位置。
-        修复逻辑：
-        1. 如果节点已在树中（Fixed），保持不动。
-        2. 如果一个Fixed一个New，New的位置必须相对于Fixed的位置计算。
-        3. 【新增】强制对齐：新插入节点的Y坐标必须与兄弟节点一致，而不是使用默认深度高度。
-        """
-        # 1. 获取基础数据
-        left_span = max(1, self.leaf_counts.get(left_id, 1))
-        right_span = max(1, self.leaf_counts.get(right_id, 1))
-
-        # 默认高度计算（仅当两个都是新节点时使用此基准）
-        parent_depth = max(self.node_depths.get(left_id, 0), self.node_depths.get(right_id, 0)) + 1
-        default_base_y = 120 - parent_depth * self._level_gap
-
-        # 2. 判断节点状态：是否已固定在画面上（不在队列中即为已固定）
-        is_left_fixed = (left_id not in self.in_queue_ids) and (left_id in self.node_items)
-        is_right_fixed = (right_id not in self.in_queue_ids) and (right_id in self.node_items)
-
-        # 3. 计算需要的水平间距
-        spacing_unit = 40
-        total_span = left_span + right_span
-        separation = max(100, total_span * spacing_unit)
-
-        left_target = QPointF()
-        right_target = QPointF()
-
-        # 4. 根据四种情况计算目标位置
-        if not is_left_fixed and not is_right_fixed:
-            # 情况 A: 两个都是新节点 -> 以 0 为中心对称，使用默认高度
-            left_target = QPointF(-separation / 2, default_base_y)
-            right_target = QPointF(separation / 2, default_base_y)
-
-        elif is_left_fixed and not is_right_fixed:
-            # 情况 B: 左边是旧树，右边是新节点
-            current_left_pos = self.node_items[left_id].pos()
-            left_target = current_left_pos  # 左边不动
-
-            # 右节点位置 = 左节点X + 间距，高度强制与左节点一致
-            right_target = QPointF(current_left_pos.x() + separation, current_left_pos.y())
-
-        elif not is_left_fixed and is_right_fixed:
-            # 情况 C: 右边是旧树，左边是新节点
-            current_right_pos = self.node_items[right_id].pos()
-            right_target = current_right_pos  # 右边不动
-
-            # 左节点位置 = 右节点X - 间距，高度强制与右节点一致
-            left_target = QPointF(current_right_pos.x() - separation, current_right_pos.y())
-
-        else:
-            # 情况 D: 两个都是旧树 -> 都保持不动
-            left_target = self.node_items[left_id].pos()
-            right_target = self.node_items[right_id].pos()
-
-        # 5. 计算父节点位置（居中于两个子节点上方）
-        def get_center(p: QPointF):
-            return QPointF(
-                p.x() + HuffmanNodeItem.width / 2,
-                p.y() + HuffmanNodeItem.height / 2,
-            )
-
-        lc = get_center(left_target)
-        rc = get_center(right_target)
-
-        parent_center_x = (lc.x() + rc.x()) / 2.0
-        # 父节点高度取两者中较高者（y值较小者）的上方
-        # 注意：现在因为强制对齐了Y轴，lc.y() 和 rc.y() 通常是一样的
-        parent_center_y = min(lc.y(), rc.y()) - self._level_gap
-
-        parent_pos = QPointF(
-            parent_center_x - HuffmanNodeItem.width / 2,
-            parent_center_y - HuffmanNodeItem.height / 2,
-        )
-
-        return {
-            "left_target": left_target,
-            "right_target": right_target,
-            "parent_pos": parent_pos,
-        }
-
-    def _ensure_stage_centered(self):
-        anim = self.anim.pause(0)
-
-        def _on_finish():
-            self._auto_scale_view()
-
-        anim.finished.connect(_on_finish)
-        return anim
-
-    def _move_subtree_to_target(self, node_id: Optional[int], target: QPointF):
-        if node_id is None or node_id not in self.node_items:
-            return self.anim.pause(0)
-
-        nodes = self._collect_subtree_nodes(node_id)
-        if not nodes:
-            return self.anim.pause(0)
-
-        root_item = self.node_items[node_id]
-        start_pos = QPointF(root_item.pos())
-        delta = target - start_pos
-        if abs(delta.x()) < 1e-2 and abs(delta.y()) < 1e-2:
-            return self.anim.pause(0)
-
-        motions = []
-        duration = self._build_duration(540)
-        initial_positions = {nid: QPointF(self.node_items[nid].pos()) for nid in nodes}
-        for nid in nodes:
-            item = self.node_items[nid]
-            goal = initial_positions[nid] + delta
-            motions.append(self.anim.move_item(item, goal, duration=duration))
-        return self.anim.parallel(*motions)
-
-    def _collect_subtree_nodes(self, node_id: Optional[int]):
-        result: List[int] = []
-
-        def dfs(nid):
-            if nid is None or nid not in self.node_items:
-                return
-            result.append(nid)
-            info = self.tree_structure.get(nid)
-            if not info:
-                return
-            dfs(info.get("left"))
-            dfs(info.get("right"))
-
-        dfs(node_id)
-        return result
-
-    def _animate_parent_creation(self, parent_info: Dict, parent_pos: QPointF):
-        parent_id = parent_info["id"]
-        value = parent_info["value"]
-        left_id = parent_info["left"]
-        right_id = parent_info["right"]
-
-        parent_item = self._create_node_item(parent_id, value)
-
-        # 深度：父节点高于子节点
-        parent_depth = max(self.node_depths.get(left_id, 0), self.node_depths.get(right_id, 0)) + 1
-        self.node_depths[parent_id] = parent_depth
-        parent_item.setPos(parent_pos)
-        parent_item.setOpacity(0.0)
-        parent_item.setZValue(3 + parent_depth)
-
-        self.tree_structure[parent_id] = {
-            "value": value,
-            "left": left_id,
-            "right": right_id,
-        }
-        self.leaf_counts[parent_id] = self.leaf_counts.get(left_id, 1) + self.leaf_counts.get(right_id, 1)
-
-        edges = []
-        edge_fade_duration = self._build_duration(260)
-        for child_id in (left_id, right_id):
-            child_item = self.node_items.get(child_id)
-            if not child_item:
-                continue
-            edge = HuffmanEdgeItem(parent_item, child_item)
-            edge.setOpacity(0.0)
-            self.scene.addItem(edge)
-            self.edge_items[(parent_id, child_id)] = edge
-            edges.append(edge)
-
-        edge_seq = self.anim.sequential()
-        for edge in edges:
-            edge_seq.addAnimation(self.anim.fade_item(edge, 0.0, 1.0, duration=edge_fade_duration))
-
-        fade_parent = self.anim.fade_item(
-            parent_item,
-            0.0,
-            1.0,
-            duration=self._build_duration(360),
-        )
-        if edge_seq.animationCount() == 0:
-            return fade_parent
-        return self.anim.sequential(edge_seq, fade_parent)
-
-    def _compress_queue(self):
-        if not self.queue_order:
-            return self.anim.pause(0)
-        positions = self._queue_positions(len(self.queue_order))
-        motions = []
-        duration = self._build_duration(320)
-        for idx, node_id in enumerate(self.queue_order):
-            item = self.node_items.get(node_id)
-            if not item:
-                continue
-            target = positions[idx]
-            if (item.pos() - target).manhattanLength() < 1e-2:
-                continue
-            motions.append(self.anim.move_item(item, target, duration=duration))
-        if not motions:
-            return self.anim.pause(0)
-        return self.anim.parallel(*motions)
-
-    # ---------- 最终落位 ----------
-
-    def _animate_final_layout(self, snapshot: Dict):
+        self.stop_all_animations()
         positions = self._compute_layout(snapshot)
-        if not positions:
-            return self.anim.pause(0)
+        self._finalize_snapshot(snapshot, positions)
 
-        motions = []
-        for node_id, target in positions.items():
-            item = self.node_items.get(node_id)
-            if not item:
+    def animate_initialize(self, snapshot: Dict):
+        self.reset()
+        self._baseline_positions = self._compute_baseline_positions(snapshot["roots"])
+        sequence = self.anim.sequential()
+        for root_id in snapshot["roots"]:
+            info = self._node_info(snapshot, root_id)
+            item = self._ensure_node_item(info)
+            target = self._baseline_positions[root_id]
+            spawn = QPointF(target.x(), target.y() + 160)
+            item.setPos(spawn)
+            item.setOpacity(0.0)
+            drop = self.anim.move_item(item, target, duration=360)
+            fade = self.anim.fade_item(item, 0.0, 1.0, duration=360)
+            sequence.addAnimation(self.anim.parallel(drop, fade))
+        self._track_animation(
+            sequence,
+            finalizer=lambda: self._finalize_snapshot(
+                snapshot, positions=dict(self._baseline_positions)
+            ),
+        )
+
+    def animate_sort_step(self, before_snapshot: Dict, after_snapshot: Dict, op: Dict):
+        i, j = op["i"], op["j"]
+        roots_before = before_snapshot.get("roots", [])
+        if i >= len(roots_before) or j >= len(roots_before):
+            self._finalize_snapshot(after_snapshot, positions=dict(self._baseline_positions))
+            return
+
+        a_id = roots_before[i]
+        b_id = roots_before[j]
+        pos_a = self._baseline_positions.get(a_id)
+        pos_b = self._baseline_positions.get(b_id)
+        if pos_a is None or pos_b is None:
+            self._finalize_snapshot(after_snapshot, positions=dict(self._baseline_positions))
+            return
+
+        item_a = self.node_items.get(a_id) or self._ensure_node_item(self._node_info(after_snapshot, a_id))
+        item_b = self.node_items.get(b_id) or self._ensure_node_item(self._node_info(after_snapshot, b_id))
+
+        self._baseline_positions[a_id], self._baseline_positions[b_id] = pos_b, pos_a
+
+        move_a = self.anim.move_item(item_a, pos_b, duration=420)
+        move_b = self.anim.move_item(item_b, pos_a, duration=420)
+
+        self._track_animation(
+            self.anim.parallel(move_a, move_b),
+            finalizer=lambda: self._finalize_snapshot(
+                after_snapshot, positions=dict(self._baseline_positions)
+            ),
+        )
+
+    def animate_full_sorting(self, steps: List[Tuple[Dict, Dict, Dict]]):
+        if not steps:
+            return
+
+        final_after_snapshot = steps[-1][1]
+        sequence = self.anim.sequential()
+        animated = False
+
+        for before_snapshot, after_snapshot, op in steps:
+            i = op.get("i")
+            j = op.get("j")
+            roots_before = before_snapshot.get("roots", [])
+
+            if (
+                i is None
+                or j is None
+                or i >= len(roots_before)
+                or j >= len(roots_before)
+            ):
                 continue
-            motions.append(self.anim.move_item(item, target, duration=680))
 
-        group = self.anim.parallel(*motions) if motions else self.anim.pause(0)
-        return self.anim.sequential(group, self.anim.pause(160))
+            a_id = roots_before[i]
+            b_id = roots_before[j]
+            pos_a = self._baseline_positions.get(a_id)
+            pos_b = self._baseline_positions.get(b_id)
+            if pos_a is None or pos_b is None:
+                continue
 
-    def _compute_layout(self, snapshot: Dict):
-        root_id = snapshot.get("root")
-        if root_id is None:
-            return {}
+            item_a = self.node_items.get(a_id) or self._ensure_node_item(self._node_info(after_snapshot, a_id))
+            item_b = self.node_items.get(b_id) or self._ensure_node_item(self._node_info(after_snapshot, b_id))
 
-        nodes = {node["id"]: node for node in snapshot.get("nodes", [])}
-        positions: Dict[int, QPointF] = {}
-        index = [0]
-        h_gap = 120
-        v_gap = 110
+            target_a = QPointF(pos_b)
+            target_b = QPointF(pos_a)
 
-        def inorder(node_id, depth):
-            if node_id is None or node_id not in nodes:
-                return
-            inorder(nodes[node_id]["left"], depth + 1)
-            x = index[0] * h_gap
-            y = depth * v_gap - 200
-            positions[node_id] = QPointF(x, y)
-            index[0] += 1
-            inorder(nodes[node_id]["right"], depth + 1)
+            move_a = self.anim.move_item(item_a, target_a, duration=420)
+            move_b = self.anim.move_item(item_b, target_b, duration=420)
 
-        inorder(root_id, 0)
+            self._baseline_positions[a_id] = target_a
+            self._baseline_positions[b_id] = target_b
 
-        total = max(1, index[0])
-        offset = ((total - 1) * h_gap) / 2.0
-        for node_id, point in positions.items():
-            positions[node_id] = QPointF(point.x() - offset, point.y())
-        return positions
+            parallel = self.anim.parallel(move_a, move_b)
+            if parallel:
+                sequence.addAnimation(parallel)
+                animated = True
 
-    # ---------- 辅助 ----------
+        if animated:
+            self._track_animation(
+                sequence,
+                finalizer=lambda snap=final_after_snapshot: self._finalize_snapshot(
+                    snap, positions=dict(self._baseline_positions)
+                ),
+            )
+        else:
+            self._finalize_snapshot(final_after_snapshot, positions=dict(self._baseline_positions))
 
-    def _flash_node(self, node_id: int, color: QColor):
+    def animate_merge_step(self, before_snapshot: Dict, after_snapshot: Dict, info: Dict):
+        left_id = info["left_id"]
+        right_id = info["right_id"]
+        parent_id = info["parent_id"]
+
+        left_item = self.node_items.get(left_id)
+        right_item = self.node_items.get(right_id)
+        if not left_item or not right_item:
+            self._finalize_snapshot(after_snapshot, positions=self._compute_layout(after_snapshot))
+            return
+
+        restore_colors: List[Tuple[HuffmanNodeItem, QColor]] = []
+        flash_left = self._highlight_node(left_item, restore_colors)
+        flash_right = self._highlight_node(right_item, restore_colors)
+
+        meeting_center_x = (self._node_center(left_item).x() + self._node_center(right_item).x()) / 2
+        meeting_y = min(left_item.pos().y(), right_item.pos().y()) - 160
+
+        width_map = self._subtree_widths(before_snapshot)
+        left_width = width_map.get(left_id, HuffmanNodeItem.width)
+        right_width = width_map.get(right_id, HuffmanNodeItem.width)
+        total_gap = left_width + right_width + self._node_gap_x
+
+        left_center = meeting_center_x - total_gap / 2 + left_width / 2
+        right_center = meeting_center_x + total_gap / 2 - right_width / 2
+
+        left_target = QPointF(left_center - HuffmanNodeItem.width / 2, meeting_y)
+        right_target = QPointF(right_center - HuffmanNodeItem.width / 2, meeting_y)
+
+        move_left = self._move_subtree(before_snapshot, left_id, left_target - left_item.pos())
+        move_right = self._move_subtree(before_snapshot, right_id, right_target - right_item.pos())
+
+        parent_info = self._node_info(after_snapshot, parent_id)
+        parent_item = self._ensure_node_item(parent_info)
+        spawn = QPointF(meeting_center_x - HuffmanNodeItem.width / 2, meeting_y - HuffmanNodeItem.height - 70)
+        parent_item.setPos(spawn)
+        self.scene.setSceneRect(self.scene.itemsBoundingRect())
+        parent_item.setOpacity(0.0)
+        fade_parent = self.anim.fade_item(parent_item, 0.0, 1.0, duration=420)
+
+        self._ensure_edge(parent_id, left_id)
+        self._ensure_edge(parent_id, right_id)
+
+        final_positions = self._compute_layout(after_snapshot)
+        relayout = self._animate_to_positions(final_positions)
+
+        sequence = self.anim.sequential()
+        if flash_left or flash_right:
+            sequence.addAnimation(self.anim.parallel(flash_left, flash_right))
+        sequence.addAnimation(self.anim.parallel(move_left, move_right))
+        sequence.addAnimation(fade_parent)
+        if relayout:
+            sequence.addAnimation(relayout)
+
+        def _finalize():
+            for item, color in restore_colors:
+                if item and item.scene():
+                    item.setFillColor(color)
+            self._finalize_snapshot(after_snapshot, positions=final_positions)
+
+        self._track_animation(sequence, finalizer=_finalize)
+
+    # ---------- Internal helpers ----------
+
+    def _finalize_snapshot(self, snapshot: Dict, positions: Optional[Dict[int, QPointF]] = None):
+        nodes_map = {node["id"]: node for node in snapshot.get("nodes", [])}
+        keep_ids = set(nodes_map.keys())
+
+        for node_id in list(self.node_items.keys()):
+            if node_id not in keep_ids:
+                item = self.node_items.pop(node_id)
+                if item.scene():
+                    self.scene.removeItem(item)
+
+        if positions is None:
+            positions = self._compute_layout(snapshot)
+
+        for info in snapshot.get("nodes", []):
+            item = self._ensure_node_item(info)
+            target = positions.get(info["id"])
+            if target:
+                item.setPos(target)
+
+        self._rebuild_edges(snapshot)
+        self._last_snapshot = snapshot
+
+        leaf_codes = self._compute_leaf_codes(snapshot)
+        for node_id, item in self.node_items.items():
+            item.set_code(leaf_codes.get(node_id))
+
+        self._auto_scale_view()
+
+    def _ensure_node_item(self, info: Dict) -> "HuffmanNodeItem":
+        node_id = info["id"]
         item = self.node_items.get(node_id)
         if not item:
-            return self.anim.pause(0)
-        original = QColor(item.fillColor)
+            item = HuffmanNodeItem(node_id)
+            self.scene.addItem(item)
+            self.node_items[node_id] = item
+        item.set_payload(
+            label=info.get("label", str(info["id"])),
+            weight=info.get("weight", 0),
+            is_leaf=info.get("is_leaf", True),
+        )
+        return item
 
-        highlight = self.anim.flash_brush(
+    def _ensure_edge(self, parent_id: int, child_id: int):
+        key = (parent_id, child_id)
+        if key in self.edge_items:
+            return
+        parent_item = self.node_items.get(parent_id)
+        child_item = self.node_items.get(child_id)
+        if not parent_item or not child_item:
+            return
+        edge = HuffmanEdgeItem(parent_item, child_item)
+        edge.setZValue(0)
+        self.scene.addItem(edge)
+        self.edge_items[key] = edge
+
+    def _rebuild_edges(self, snapshot: Dict):
+        for edge in list(self.edge_items.values()):
+            if edge.scene():
+                self.scene.removeItem(edge)
+        self.edge_items.clear()
+
+        nodes_map = {node["id"]: node for node in snapshot.get("nodes", [])}
+        for info in nodes_map.values():
+            parent_id = info["id"]
+            for child_key in ("left", "right"):
+                child_id = info.get(child_key)
+                if child_id is None:
+                    continue
+                self._ensure_edge(parent_id, child_id)
+
+    def _compute_baseline_positions(self, roots: List[int]) -> Dict[int, QPointF]:
+        count = len(roots)
+        if count == 0:
+            return {}
+        spacing = HuffmanNodeItem.width + 36
+        total_width = spacing * max(count - 1, 0)
+        start_x = -total_width / 2
+        positions: Dict[int, QPointF] = {}
+        for idx, node_id in enumerate(roots):
+            x = start_x + idx * spacing
+            positions[node_id] = QPointF(x, self._baseline_y)
+        return positions
+
+    def _compute_layout(self, snapshot: Dict) -> Dict[int, QPointF]:
+        roots = snapshot.get("roots", [])
+        nodes = snapshot.get("nodes", [])
+        if not roots or not nodes:
+            return {}
+
+        nodes_map = {node["id"]: node for node in nodes}
+        width_cache: Dict[int, float] = {}
+        positions: Dict[int, QPointF] = {}
+
+        def subtree_width(node_id: Optional[int]) -> float:
+            if node_id is None or node_id not in nodes_map:
+                return 0.0
+            if node_id in width_cache:
+                return width_cache[node_id]
+
+            node = nodes_map[node_id]
+            left = subtree_width(node.get("left"))
+            right = subtree_width(node.get("right"))
+            node_width = HuffmanNodeItem.width
+
+            if left and right:
+                width = left + self._node_gap_x + right
+            elif left:
+                width = max(node_width, left + self._node_gap_x)
+            elif right:
+                width = max(node_width, right + self._node_gap_x)
+            else:
+                width = node_width
+
+            width_cache[node_id] = width
+            return width
+
+        def assign(node_id: Optional[int], center_x: float, depth: int):
+            if node_id is None or node_id not in nodes_map:
+                return
+            y = depth * self._node_gap_y
+            positions[node_id] = QPointF(center_x - HuffmanNodeItem.width / 2, y)
+            node = nodes_map[node_id]
+            left_id = node.get("left")
+            right_id = node.get("right")
+
+            if left_id and right_id:
+                left_width = subtree_width(left_id)
+                right_width = subtree_width(right_id)
+                left_center = center_x - (self._node_gap_x + right_width) / 2 - left_width / 2
+                right_center = center_x + (self._node_gap_x + left_width) / 2 + right_width / 2
+                assign(left_id, left_center, depth + 1)
+                assign(right_id, right_center, depth + 1)
+            elif left_id:
+                assign(left_id, center_x - self._node_gap_x / 2, depth + 1)
+            elif right_id:
+                assign(right_id, center_x + self._node_gap_x / 2, depth + 1)
+
+        tree_widths = [subtree_width(root_id) for root_id in roots]
+        total_width = sum(tree_widths) + self._forest_spacing * max(len(roots) - 1, 0)
+        cursor = -total_width / 2
+        for width, root_id in zip(tree_widths, roots):
+            center = cursor + width / 2
+            assign(root_id, center, 0)
+            cursor += width + self._forest_spacing
+
+        if positions:
+            min_y = min(pos.y() for pos in positions.values())
+            for node_id in positions:
+                positions[node_id] = QPointF(positions[node_id].x(), positions[node_id].y() - min_y + 120)
+
+        return positions
+
+    def _subtree_widths(self, snapshot: Dict) -> Dict[int, float]:
+        nodes = snapshot.get("nodes", [])
+        if not nodes:
+            return {}
+        nodes_map = {node["id"]: node for node in nodes}
+        width_cache: Dict[int, float] = {}
+
+        def helper(node_id: Optional[int]) -> float:
+            if node_id is None or node_id not in nodes_map:
+                return 0.0
+            if node_id in width_cache:
+                return width_cache[node_id]
+            node = nodes_map[node_id]
+            left = helper(node.get("left"))
+            right = helper(node.get("right"))
+            node_width = HuffmanNodeItem.width
+            if left and right:
+                width = left + self._node_gap_x + right
+            elif left:
+                width = max(node_width, left + self._node_gap_x)
+            elif right:
+                width = max(node_width, right + self._node_gap_x)
+            else:
+                width = node_width
+            width_cache[node_id] = width
+            return width
+
+        for node in nodes:
+            helper(node["id"])
+        return width_cache
+
+    def _node_info(self, snapshot: Dict, node_id: int) -> Dict:
+        for info in snapshot.get("nodes", []):
+            if info["id"] == node_id:
+                return info
+        raise KeyError(f"Node {node_id} not found")
+
+    def _highlight_node(self, item: "HuffmanNodeItem", restore: List[Tuple["HuffmanNodeItem", QColor]]):
+        original = QColor(item.fillColor)
+        restore.append((item, original))
+        return self.anim.flash_brush(
             setter=item.setFillColor,
             start_color=original,
-            end_color=color,
-            duration=self._build_duration(220),
-            loops=1,
+            end_color=QColor("#ffb74d"),
+            duration=360,
+            loops=2,
         )
-        recover = self.anim.flash_brush(
-            setter=item.setFillColor,
-            start_color=color,
-            end_color=original,
-            duration=self._build_duration(220),
-            loops=1,
-        )
-        return self.anim.sequential(highlight, recover)
 
-    def _animate_tree_relayout(self):
-        positions = self._compute_current_layout()
-        if not positions:
-            group = self.anim.pause(0)
-            group.finished.connect(self._auto_scale_view)
-            return group
-
+    def _move_subtree(self, snapshot: Dict, root_id: int, delta: QPointF):
+        node_ids = self._collect_subtree_ids(snapshot, root_id)
         motions = []
-        duration = self._build_duration(520)
+        for node_id in node_ids:
+            item = self.node_items.get(node_id)
+            if not item:
+                continue
+            target = item.pos() + delta
+            motions.append(self.anim.move_item(item, target, duration=520))
+        return self.anim.parallel(*motions) if motions else self.anim.pause(1)
+
+    def _collect_subtree_ids(self, snapshot: Dict, root_id: int) -> Set[int]:
+        nodes_map = {node["id"]: node for node in snapshot.get("nodes", [])}
+        result: Set[int] = set()
+        stack = [root_id]
+        while stack:
+            node_id = stack.pop()
+            if node_id in result or node_id not in nodes_map:
+                continue
+            result.add(node_id)
+            node = nodes_map[node_id]
+            if node.get("right"):
+                stack.append(node["right"])
+            if node.get("left"):
+                stack.append(node["left"])
+        return result
+
+    def _animate_to_positions(self, positions: Dict[int, QPointF]):
+        motions = []
         for node_id, target in positions.items():
             item = self.node_items.get(node_id)
             if not item:
                 continue
-            if (item.pos() - target).manhattanLength() < 1e-2:
-                continue
-            motions.append(self.anim.move_item(item, target, duration=duration))
+            motions.append(self.anim.move_item(item, target, duration=560))
+        return self.anim.parallel(*motions) if motions else None
 
-        group = self.anim.parallel(*motions) if motions else self.anim.pause(0)
-        group.finished.connect(self._auto_scale_view)
-        return group
+    @staticmethod
+    def _node_center(item: "HuffmanNodeItem") -> QPointF:
+        pos = item.pos()
+        return QPointF(pos.x() + HuffmanNodeItem.width / 2, pos.y() + HuffmanNodeItem.height / 2)
 
-    def _compute_current_layout(self):
-        nodes = {
-            node_id: data
-            for node_id, data in self.tree_structure.items()
-            if node_id not in self.in_queue_ids
-        }
-        if not nodes:
+    def _compute_leaf_codes(self, snapshot: Dict) -> Dict[int, str]:
+        stage = snapshot.get("stage")
+        roots = snapshot.get("roots", [])
+        nodes = snapshot.get("nodes", [])
+        if stage != "complete" or len(roots) != 1 or not nodes:
             return {}
 
-        roots = self._find_current_roots(nodes)
-        if not roots:
-            return {}
+        nodes_map = {node["id"]: node for node in nodes}
+        codes: Dict[int, str] = {}
 
-        positions: Dict[int, QPointF] = {}
-        index = [0]
-        h_gap = 120
-        v_gap = 110
-
-        def inorder(node_id, depth):
-            if node_id is None or node_id not in nodes:
+        def dfs(node_id: Optional[int], prefix: str):
+            if node_id is None or node_id not in nodes_map:
                 return
-            inorder(nodes[node_id]["left"], depth + 1)
-            x = index[0] * h_gap
-            y = depth * v_gap - 200
-            positions[node_id] = QPointF(x, y)
-            index[0] += 1
-            inorder(nodes[node_id]["right"], depth + 1)
+            node = nodes_map[node_id]
+            left_id = node.get("left")
+            right_id = node.get("right")
+            if left_id is None and right_id is None:
+                codes[node_id] = prefix if prefix else "0"
+                return
+            if left_id is not None:
+                dfs(left_id, prefix + "0")
+            if right_id is not None:
+                dfs(right_id, prefix + "1")
 
-        for root in roots:
-            inorder(root, 0)
-
-        total = max(1, index[0])
-        offset = ((total - 1) * h_gap) / 2.0
-        for node_id, point in positions.items():
-            positions[node_id] = QPointF(point.x() - offset, point.y())
-        return positions
-
-    def _find_current_roots(self, nodes: Dict[int, Dict[str, Optional[int]]]):
-        children: Set[int] = set()
-        for data in nodes.values():
-            for child in (data.get("left"), data.get("right")):
-                if child is not None and child in nodes:
-                    children.add(child)
-        roots = [node_id for node_id in nodes if node_id not in children]
-        roots.sort()
-        return roots
-
-    def _create_node_item(self, node_id: int, value):
-        existing = self.node_items.get(node_id)
-        if existing:
-            existing.set_value(value)
-            return existing
-        item = HuffmanNodeItem(node_id, value)
-        self.scene.addItem(item)
-        self.node_items[node_id] = item
-        return item
+        dfs(roots[0], "")
+        return codes
 
     def _show_background_menu(self, screen_pos):
         if isinstance(screen_pos, QPointF):
             screen_pos = screen_pos.toPoint()
         menu = QMenu()
-        clear_action = menu.addAction("Clear")
+        open_action = menu.addAction("Open From File…")
+        save_action = menu.addAction("Save To File…")
         chosen = menu.exec_(screen_pos)
-        if chosen == clear_action:
-            self.reset()
+        if chosen == open_action:
+            self.loadRequested.emit()
+        elif chosen == save_action:
+            self.saveRequested.emit()
 
     def eventFilter(self, watched, event):
         if watched is self.scene and event.type() == QEvent.GraphicsSceneContextMenu:
@@ -606,50 +517,66 @@ class HuffmanView(BaseStructureView):
                 return True
         return super().eventFilter(watched, event)
 
-    def _build_duration(self, base_ms: int) -> int:
-        """
-        将构建阶段动画放慢至原来的 0.7 倍速度（时长 ≈ 原时长 / 0.7）。
-        """
-        slow_factor = 1 / 0.7
-        return max(1, int(round(base_ms * slow_factor)))
-
 
 class HuffmanNodeItem(QGraphicsObject):
     positionChanged = pyqtSignal()
 
-    width = 70
-    height = 70
+    width = 74
+    height = 74
 
-    def __init__(self, node_id, value):
+    def __init__(self, node_id: int):
         super().__init__()
         self.node_id = node_id
-        self._value = str(value)
-        self.fillColor = QColor("#e9e9ef")
-        self.strokeColor = QColor("#4a4a52")
+        self._label = str(node_id)
+        self._is_leaf = True
+        self.fillColor = QColor("#d1ecff")
+        self.strokeColor = QColor("#37474f")
         self.textColor = QColor("#1f1f24")
+        self.code_item = QGraphicsSimpleTextItem("", self)
+        self.code_item.setBrush(QBrush(self.textColor))
+        self.code_item.setVisible(False)
         self.setZValue(2)
         self.setFlag(QGraphicsItem.ItemIsSelectable, False)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
-        self.setAcceptedMouseButtons(Qt.NoButton)
 
-    def boundingRect(self):
-        return QRectF(0, 0, self.width, self.height)
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, self.width, self.height + 24)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(painter.Antialiasing)
         painter.setPen(QPen(self.strokeColor, 2))
         painter.setBrush(QBrush(self.fillColor))
-        painter.drawEllipse(self.boundingRect())
+        painter.drawEllipse(QRectF(0, 0, self.width, self.height))
         painter.setPen(self.textColor)
-        painter.drawText(self.boundingRect(), Qt.AlignCenter, self._value)
+        painter.drawText(QRectF(0, 0, self.width, self.height), Qt.AlignCenter, self._label)
 
-    def set_value(self, value):
-        self._value = f"{value:g}"
+    def set_payload(self, label: str, weight: float, is_leaf: bool):
+        self._label = label
+        self._is_leaf = is_leaf
+        base_color = QColor("#d1ecff") if is_leaf else QColor("#dcd1ff")
+        self.setFillColor(base_color)
         self.update()
 
     def setFillColor(self, color: QColor):
         self.fillColor = QColor(color)
         self.update()
+
+    def set_code(self, code: Optional[str]):
+        if code:
+            self.code_item.setText(code)
+            self.code_item.setVisible(True)
+            self._update_code_position()
+        else:
+            self.code_item.setText("")
+            self.code_item.setVisible(False)
+
+    def _update_code_position(self):
+        if not self.code_item.isVisible():
+            return
+        rect = self.code_item.boundingRect()
+        x = (self.width - rect.width()) / 2
+        y = self.height + 4
+        self.code_item.setPos(x, y)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
@@ -657,49 +584,21 @@ class HuffmanNodeItem(QGraphicsObject):
         return super().itemChange(change, value)
 
 
-class HuffmanEdgeItem(QGraphicsObject):
+class HuffmanEdgeItem(QGraphicsPathItem):
     def __init__(self, parent_item: HuffmanNodeItem, child_item: HuffmanNodeItem):
         super().__init__()
         self.parent_item = parent_item
         self.child_item = child_item
-        self._disposed = False
-        self._path = QPainterPath()
-        self._bounding_rect = QRectF()
-        self._pen = QPen(QColor("#9e9e9e"), 2)
-        self._pen.setCapStyle(Qt.RoundCap)
-        self._pen.setJoinStyle(Qt.RoundJoin)
 
+        pen = QPen(QColor("#9e9e9e"), 2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        self.setPen(pen)
         self.setZValue(1)
-        self.setAcceptedMouseButtons(Qt.NoButton)
-        self.setFlag(QGraphicsItem.ItemIsSelectable, False)
 
         self.parent_item.positionChanged.connect(self.update_geometry)
         self.child_item.positionChanged.connect(self.update_geometry)
         self.update_geometry()
-
-    def boundingRect(self):
-        return self._bounding_rect
-
-    def paint(self, painter, option, widget=None):
-        painter.setRenderHint(painter.Antialiasing)
-        painter.setPen(self._pen)
-        painter.drawPath(self._path)
-
-    def dispose(self):
-        if self._disposed:
-            return
-        self._disposed = True
-        try:
-            self.parent_item.positionChanged.disconnect(self.update_geometry)
-        except (TypeError, RuntimeError):
-            pass
-        try:
-            self.child_item.positionChanged.disconnect(self.update_geometry)
-        except (TypeError, RuntimeError):
-            pass
-
-    def __del__(self):
-        self.dispose()
 
     def update_geometry(self):
         start = self._center(self.parent_item)
@@ -719,15 +618,10 @@ class HuffmanEdgeItem(QGraphicsObject):
 
         path = QPainterPath(start_point)
         path.lineTo(end_point)
-
-        self.prepareGeometryChange()
-        self._path = path
-        # 给笔划留出 2px 的缓冲，避免裁剪
-        self._bounding_rect = self._path.boundingRect().adjusted(-2, -2, 2, 2)
-        self.update()
+        self.setPath(path)
 
     @staticmethod
-    def _center(node_item: HuffmanNodeItem):
+    def _center(node_item: HuffmanNodeItem) -> QPointF:
         pos = node_item.scenePos()
         return QPointF(
             pos.x() + HuffmanNodeItem.width / 2,

@@ -1004,7 +1004,7 @@ class LinkedListNodeItem(QGraphicsObject):
         super().__init__()
         self.node_id = node_id
         self._value = str(value)
-        self.fillColor = QColor("#e9e9ef")
+        self.fillColor = QColor("#cfd3e1")
         self.strokeColor = QColor("#4a4a52")
         self.textColor = QColor("#1f1f24")
         self.data_width = self.data_base_width
@@ -1063,7 +1063,9 @@ class LinkedListNodeItem(QGraphicsObject):
         self.update()
 
     def setFillColor(self, color: QColor):
-        self.fillColor = QColor(color)
+        # color = QColor(color)
+        # print(f"[debug] node {self.node_id} fill -> {color.name()}")
+        self.fillColor = color
         self.update()
 
     def setStrokeColor(self, color: QColor):

@@ -1,63 +1,88 @@
-import re
-from typing import List
+import json
+from pathlib import Path
 
 from PyQt5.QtWidgets import (
+    QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
-    QMessageBox,
 )
 
-from core.global_ctrl import GlobalController
 from huffman.huff_model import HuffmanModel
 from huffman.huff_view import HuffmanView
 
 
 class HuffmanController(QWidget):
-    """
-    单一操作：“构建哈夫曼树”，输入一组正数，按顺序播放排序 + 构建动画。
-    """
+    """哈夫曼树可视化控制器，负责输入、步骤驱动与状态更新。"""
 
-    def __init__(self, global_ctrl: GlobalController):
+    def __init__(self, global_ctrl):
         super().__init__()
+        self.global_ctrl = global_ctrl
         self.model = HuffmanModel()
         self.view = HuffmanView(global_ctrl)
         self._panel_locked = False
 
-        self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("例如：5, 9, 12, 13, 16, 45")
-        self.input_edit.returnPressed.connect(self._on_build)
+        self.panel = self._build_panel()
 
-        self.build_btn = QPushButton("构建哈夫曼树")
-        self.build_btn.clicked.connect(self._on_build)
+        self.view.interactionLocked.connect(self._on_lock_state)
+        self.view.saveRequested.connect(self._save_to_file)
+        self.view.loadRequested.connect(self._load_from_file)
 
-        self.panel = self._create_panel()
-        self.view.interactionLocked.connect(self._handle_lock)
+    # ---------- UI 构建 ----------
 
-    def _create_panel(self):
-        group = QGroupBox("Huffman Builder")
-        group.setStyleSheet("QGroupBox { color: white; }")
-        form = QFormLayout()
-        form.setContentsMargins(12, 10, 12, 12)
-        form.setSpacing(8)
-        form.addRow("权重列表:", self.input_edit)
-        form.addRow(self.build_btn)
-
+    def _build_panel(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(group)
-        layout.addStretch(1)
-        group.setLayout(form)
-        return container
+        layout.setSpacing(12)
 
-    # ---------- 生命周期 ----------
+        input_group = QGroupBox("输入与初始化")
+        input_group.setStyleSheet("QGroupBox { color: white; }")
+        input_layout = QFormLayout()
+        input_layout.setContentsMargins(12, 8, 12, 12)
+        input_layout.setSpacing(6)
+
+        self.weights_edit = QLineEdit()
+        self.weights_edit.setPlaceholderText("例如：5, 9, 12, 13, 16, 45 或 A:5, B:9")
+        self.weights_edit.returnPressed.connect(self._on_initialize)
+        input_layout.addRow("权重序列：", self.weights_edit)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self.build_btn = QPushButton("初始化")
+        self.build_btn.clicked.connect(self._on_initialize)
+        self.next_btn = QPushButton("下一步")
+        self.next_btn.clicked.connect(self._on_next_step)
+        btn_row.addWidget(self.build_btn)
+        btn_row.addWidget(self.next_btn)
+        input_layout.addRow(btn_row)
+
+        input_group.setLayout(input_layout)
+        layout.addWidget(input_group)
+
+        status_group = QGroupBox("状态")
+        status_group.setStyleSheet("QGroupBox { color: white; }")
+        status_layout = QVBoxLayout()
+        status_layout.setContentsMargins(12, 8, 12, 12)
+        self.stage_label = QLabel("尚未初始化")
+        status_layout.addWidget(self.stage_label)
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
+
+        layout.addStretch(1)
+        self._refresh_controls()
+        return container
 
     def build_panel(self):
         return self.panel
+
+    # ---------- 生命周期 ----------
 
     def on_activate(self, graphics_view):
         self.view.bind_canvas(graphics_view)
@@ -66,39 +91,174 @@ class HuffmanController(QWidget):
     def on_deactivate(self):
         pass
 
-    # ---------- 逻辑 ----------
+    # ---------- 事件处理 ----------
 
-    def _on_build(self):
-        values = self._parse_values(self.input_edit.text())
-        if values is None:
+    def _on_initialize(self):
+        if self._panel_locked:
             return
-        process = self.model.build_process(values)
-        if not process["sorting"] and not process["building"]:
-            QMessageBox.information(self, "提示", "请输入至少一个正数。")
-            return
-        self.view.play_process(process)
-
-    def _parse_values(self, text: str):
-        text = text.strip()
+        text = self.weights_edit.text().strip()
         if not text:
-            QMessageBox.warning(self, "提示", "请输入至少一个权重。")
-            return None
-        normalized = text.replace("，", ",")
-        tokens = [t for t in re.split(r"[,\s]+", normalized) if t]
-        values: List[float] = []
-        for token in tokens:
-            try:
-                value = float(token)
-            except ValueError:
-                QMessageBox.warning(self, "非法输入", f"“{token}” 不是有效的数值。")
-                return None
-            if value <= 0:
-                QMessageBox.warning(self, "非法输入", "所有权重必须是正数。")
-                return None
-            values.append(value)
-        return values
+            QMessageBox.warning(self, "Huffman", "请输入至少一个权重。")
+            return
+        try:
+            self.model.initialize(text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Huffman", str(exc))
+            return
 
-    def _handle_lock(self, locked: bool):
-        self._panel_locked = locked
+        snapshot = self.model.snapshot()
+        self.view.animate_initialize(snapshot)
+        self._update_status()
+        self._refresh_controls()
+
+    def _on_next_step(self):
+        if self._panel_locked or self.view.is_busy():
+            return
+        if not self.model.has_data:
+            QMessageBox.information(self, "Huffman", "请先初始化权重序列。")
+            return
+
+        stage = self.model.stage
+        if stage == HuffmanModel.STAGE_SORTING:
+            steps = []
+            while True:
+                before = self.model.snapshot()
+                op = self.model.next_sort_operation()
+                after = self.model.snapshot()
+                if op is None:
+                    break
+                steps.append((before, after, op))
+
+            if steps:
+                self.view.animate_full_sorting(steps)
+            else:
+                QMessageBox.information(self, "Huffman", "排序阶段已完成，开始合并。")
+        elif stage in (HuffmanModel.STAGE_BUILDING, HuffmanModel.STAGE_COMPLETE):
+            if self.model.is_complete():
+                QMessageBox.information(self, "Huffman", "哈夫曼树已经构建完成。")
+                self._refresh_controls()
+                return
+            before = self.model.snapshot()
+            info = self.model.perform_merge()
+            after = self.model.snapshot()
+            if info:
+                self.view.animate_merge_step(before, after, info)
+        else:
+            QMessageBox.information(self, "Huffman", "请先初始化。")
+
+        self._update_status()
+        self._refresh_controls()
+
+    def _save_to_file(self):
+        if self._panel_locked or self.view.is_busy():
+            return
+        snapshot = self.model.snapshot()
+        if not snapshot.get("nodes"):
+            QMessageBox.information(self, "Huffman", "当前无可保存的节点。")
+            return
+
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "huff"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "huffman.json")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存 Huffman 森林",
+            suggested,
+            "Huffman (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        payload = {
+            "schema": "pyqt_ds_visualizer",
+            "version": 1,
+            "structure": "huff",
+            "snapshot": snapshot,
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            QMessageBox.critical(self, "保存失败", f"无法写入文件：\n{exc}")
+            return
+
+        QMessageBox.information(self, "Huffman", f"已保存到：\n{path}")
+
+    def _load_from_file(self):
+        if self._panel_locked or self.view.is_busy():
+            return
+
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "huff"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "打开 Huffman 森林",
+            str(base_dir),
+            "Huffman (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(self, "打开失败", f"无法读取文件：\n{exc}")
+            return
+
+        if (
+            payload.get("schema") != "pyqt_ds_visualizer"
+            or payload.get("structure") != "huff"
+            or "snapshot" not in payload
+        ):
+            QMessageBox.critical(self, "打开失败", "文件格式不受支持。")
+            return
+
+        snapshot = payload["snapshot"]
+        if not hasattr(self.model, "load_snapshot"):
+            QMessageBox.critical(self, "加载失败", "当前模型未实现快照加载能力。")
+            return
+
+        self.model.load_snapshot(snapshot)
+        fresh_snapshot = self.model.snapshot()
+
+        if fresh_snapshot.get("nodes"):
+            self.view.render_snapshot(fresh_snapshot)
+        else:
+            self.view.reset()
+
+        self._update_status()
+        self._refresh_controls()
+        QMessageBox.information(self, "Huffman", "文件加载完成。")
+
+    # ---------- 状态管理 ----------
+
+    def _update_status(self):
+        if not self.model.has_data:
+            self.stage_label.setText("尚未初始化")
+            return
+        stage_map = {
+            HuffmanModel.STAGE_SORTING: "阶段：排序（冒泡）",
+            HuffmanModel.STAGE_BUILDING: "阶段：合并构建",
+            HuffmanModel.STAGE_COMPLETE: "阶段：完成",
+        }
+        stage_text = stage_map.get(self.model.stage, "阶段：未知")
+        forest_size = len(self.model.forest)
+        self.stage_label.setText(f"{stage_text} | 森林棵数：{forest_size}")
+
+    def _refresh_controls(self):
+        ready = self.model.has_data
+        complete = self.model.is_complete()
+        locked = self._panel_locked
         self.build_btn.setDisabled(locked)
-        self.input_edit.setDisabled(locked)
+        self.weights_edit.setDisabled(locked)
+        self.next_btn.setDisabled(locked or not ready or complete)
+
+    def _on_lock_state(self, locked: bool):
+        self._panel_locked = locked
+        self._refresh_controls()

@@ -777,7 +777,7 @@ class BSTNodeItem(QGraphicsObject):
         super().__init__()
         self.node_id = node_id
         self._value = str(value)
-        self.fillColor = QColor("#e9e9ef")
+        self.fillColor = QColor("#cfd3e1")
         self.strokeColor = QColor("#4a4a52")
         self.textColor = QColor("#1f1f24")
         self.setZValue(2)

@@ -445,7 +445,7 @@ class StackNodeItem(QGraphicsObject):
         super().__init__()
         self.node_id = node_id
         self._value = str(value)
-        self.fill_color = QColor("#e9e9ef")
+        self.fill_color = QColor("#cfd3e1")
         self.stroke_color = QColor("#4a4a52")
         self.text_color = QColor("#1f1f24")
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
