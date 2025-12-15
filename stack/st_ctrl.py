@@ -8,7 +8,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
+from PyQt5.QtGui import QImage, QPainter
+from PyQt5.QtCore import Qt, QRectF
 import json
 from pathlib import Path
 from PyQt5.QtWidgets import QFileDialog
@@ -31,6 +32,55 @@ class StackController(QWidget):
         self.view.clearAllRequested.connect(self._on_clear_all_requested)
         self.view.saveRequested.connect(self._save_to_file)
         self.view.loadRequested.connect(self._load_from_file)
+        self.view.saveImageRequested.connect(self._save_as_image)  # [新增] 连接图片保存信号
+
+    # [新增] 保存为图片的方法
+    def _save_as_image(self):
+        # 即使栈为空，可能也有 POP 记录，所以不强制检查 model 长度
+        # 但如果两者都为空，提示一下也可以，这里选择只要有内容就允许保存
+
+        # 1. 确定保存目录
+        base_dir = Path(__file__).resolve().parents[1] / "save_as_photo" / "stack"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "stack_snapshot.png")
+
+        # 2. 弹出文件选择框
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save as Image",
+            suggested,
+            "Images (*.png *.jpg *.bmp);;All Files (*)",
+        )
+        if not path:
+            return
+
+        # 3. 获取场景边界并渲染
+        scene = self.view.scene
+        # 使用 itemsBoundingRect 确保包含所有元素（包括栈容器和 POP 文本）
+        content_rect = scene.itemsBoundingRect()
+
+        if content_rect.isNull():
+            content_rect = QRectF(0, 0, 600, 400)
+
+        padding = 40
+        target_rect = content_rect.adjusted(-padding, -padding, padding, padding)
+
+        image = QImage(target_rect.size().toSize(), QImage.Format_ARGB32)
+        image.fill(Qt.white)
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        scene.render(painter, target=QRectF(image.rect()), source=target_rect)
+        painter.end()
+
+        # 4. 保存文件
+        if image.save(path):
+            QMessageBox.information(self, "Save Image", f"图片已保存至：\n{path}")
+        else:
+            QMessageBox.critical(self, "Save Image", "图片保存失败，请检查路径或权限。")
 
     def _save_to_file(self):
         snapshot = self.model.snapshot()

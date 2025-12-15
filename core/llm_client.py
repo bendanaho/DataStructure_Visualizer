@@ -54,8 +54,9 @@ class LLMClient:
             "2. 严禁输出 Markdown 代码块标记（如 ```dsl ... ```），直接输出纯文本。\n"
             "3. 指令需省略结构名称（STRUCTURE），直接以动作（ACTION）开头。\n"
             "4. 若用户需求涉及多个结构，可分行输出，但仍需对每个指令省略结构名前缀。\n"
-            "5. 如果用户输入与数据结构操作无关（如闲聊、数学计算、通用问答、代码解释等），"
-            "请直接输出 `# IGNORE: 输入与数据结构操作无关`，严禁回答问题或生成无效指令。"
+            "5. 如果用户输入包含与数据结构操作无关（如闲聊、数学计算、通用问答、代码解释等）的内容，"
+            "如果全部为无关内容，请直接输出 `# IGNORE: 输入与数据结构操作无关`，严禁回答问题或生成无效指令。"
+            "如果只有部分无关内容，请忽略无关内容，输出相关的DSL文本"
         )
 
         target = structure_type or self._default_structure_hint(user_text)
@@ -117,6 +118,10 @@ class LLMClient:
             return "Stack"
         if "树" in lowered or "bst" in lowered:
             return "BST"
+        if "avl" in lowered:  # 新增
+            return "AVL"
         if "哈夫曼" in lowered or "huffman" in lowered:
             return "Huffman"
+        if "双向链表" in text or "双链表" in text or "doubly" in lowered or "double linked" in lowered or "dll" in lowered:
+            return "Doubly Linked List"
         return ""

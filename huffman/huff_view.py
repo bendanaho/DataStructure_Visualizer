@@ -19,6 +19,7 @@ class HuffmanView(BaseStructureView):
 
     saveRequested = pyqtSignal()
     loadRequested = pyqtSignal()
+    saveImageRequested = pyqtSignal()  # [新增] 补充缺失的信号定义
 
     def __init__(self, global_ctrl):
         super().__init__(global_ctrl)
@@ -233,11 +234,17 @@ class HuffmanView(BaseStructureView):
                 menu = QMenu()
                 open_action = menu.addAction("打开快照…")
                 save_action = menu.addAction("保存快照…")
+                save_img_action = menu.addAction("保存为图片…")
+
                 chosen = menu.exec_(event.screenPos())
+
                 if chosen == open_action:
                     self.loadRequested.emit()
                 elif chosen == save_action:
                     self.saveRequested.emit()
+                elif chosen == save_img_action:
+                    self.saveImageRequested.emit()
+
                 event.accept()
                 return True
         return super().eventFilter(watched, event)

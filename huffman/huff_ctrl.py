@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
-
+from PyQt5.QtGui import QImage, QPainter
+from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtWidgets import (
     QFileDialog,
     QFormLayout,
@@ -33,6 +34,62 @@ class HuffmanController(QWidget):
         self.view.interactionLocked.connect(self._on_lock_state)
         self.view.saveRequested.connect(self._save_to_file)
         self.view.loadRequested.connect(self._load_from_file)
+        self.view.saveImageRequested.connect(self._save_as_image)  # [新增] 连接图片保存信号
+
+    def _save_as_image(self):
+        if self._panel_locked or self.view.is_busy():
+            return
+
+        # 简单检查是否有内容
+        if not self.model.has_data:
+            QMessageBox.information(self, "保存图片", "当前没有哈夫曼树内容，无需保存。")
+            return
+
+        # 1. 确定保存目录
+        base_dir = Path(__file__).resolve().parents[1] / "save_as_photo" / "huff"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "huffman_snapshot.png")
+
+        # 2. 弹出文件选择框
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存为图片",
+            suggested,
+            "Images (*.png *.jpg *.bmp);;All Files (*)",
+        )
+        if not path:
+            return
+
+        # 3. 获取场景边界并渲染
+        scene = self.view.scene
+        content_rect = scene.itemsBoundingRect()
+
+        # 如果场景为空或计算出的边界无效，给一个默认大小
+        if content_rect.isNull():
+            content_rect = QRectF(0, 0, 800, 600)
+
+        # 添加一些内边距
+        padding = 40
+        target_rect = content_rect.adjusted(-padding, -padding, padding, padding)
+
+        # 创建图片画布
+        image = QImage(target_rect.size().toSize(), QImage.Format_ARGB32)
+        image.fill(Qt.white)
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        # 渲染场景
+        scene.render(painter, target=QRectF(image.rect()), source=target_rect)
+        painter.end()
+
+        # 4. 保存文件
+        if image.save(path):
+            QMessageBox.information(self, "保存图片", f"图片已保存至：\n{path}")
+        else:
+            QMessageBox.critical(self, "保存图片", "图片保存失败，请检查路径或权限。")
 
     # ---------- UI 构建 ----------
 

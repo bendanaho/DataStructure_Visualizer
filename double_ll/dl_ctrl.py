@@ -1,34 +1,36 @@
+import json
 import re
+from pathlib import Path
 from PyQt5.QtGui import QImage, QPainter
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtWidgets import (
+    QFileDialog,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
+    QInputDialog,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
-    QInputDialog,
-    QGroupBox,
 )
 
 from core.global_ctrl import GlobalController
-from linklist.sl_model import LinkedListModel
-from linklist.sl_view import LinkedListViewWithPersistence
-import json
-from pathlib import Path
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from double_ll.dl_model import DoublyLinkedListModel
+from double_ll.dl_view import DoublyLinkedListViewWithPersistence
 
-class LinkedListController(QWidget):
+
+class DoublyLinkedListController(QWidget):
     """
-    Controller builds the operation panel and wires UI events -> model -> view.
+    控制层：拼装操作面板，并将 UI 事件串联到模型与视图。
     """
 
     def __init__(self, global_ctrl: GlobalController):
         super().__init__()
-        self.model = LinkedListModel()
-        self.view = LinkedListViewWithPersistence(global_ctrl)
+        self.model = DoublyLinkedListModel()
+        self.view = DoublyLinkedListViewWithPersistence(global_ctrl)
         self.panel_index = -1
         self._panel_locked = False
 
@@ -48,13 +50,13 @@ class LinkedListController(QWidget):
     # [新增] 保存为图片的方法
     def _save_as_image(self):
         if self.model.length == 0:
-            QMessageBox.information(self, "Save Image", "当前画布为空，无需保存。")
+            QMessageBox.information(self, "Save Image", "当前链表为空，无需保存。")
             return
 
         # 1. 确定保存目录
-        base_dir = Path(__file__).resolve().parents[1] / "save_as_photo" / "linklist"
+        base_dir = Path(__file__).resolve().parents[1] / "save_as_photo" / "doublyll"
         base_dir.mkdir(parents=True, exist_ok=True)
-        suggested = str(base_dir / "linked_list_snapshot.png")
+        suggested = str(base_dir / "doubly_ll_snapshot.png")
 
         # 2. 弹出文件选择框
         path, _ = QFileDialog.getSaveFileName(
@@ -68,21 +70,22 @@ class LinkedListController(QWidget):
 
         # 3. 获取场景边界并渲染
         scene = self.view.scene
-        # 获取所有图元的边界矩形
         content_rect = scene.itemsBoundingRect()
-        # 增加一些内边距 (Padding)
-        padding = 20
+
+        if content_rect.isNull():
+            content_rect = QRectF(0, 0, 800, 600)
+
+        padding = 40
         target_rect = content_rect.adjusted(-padding, -padding, padding, padding)
 
-        # 创建 QImage
         image = QImage(target_rect.size().toSize(), QImage.Format_ARGB32)
-        image.fill(Qt.white)  # 填充白色背景，如果需要透明可改为 Qt.transparent
+        image.fill(Qt.white)
 
-        # 使用 QPainter 渲染场景
         painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.TextAntialiasing)
-        # 将场景的 target_rect 区域渲染到 image 上
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
         scene.render(painter, target=QRectF(image.rect()), source=target_rect)
         painter.end()
 
@@ -92,18 +95,20 @@ class LinkedListController(QWidget):
         else:
             QMessageBox.critical(self, "Save Image", "图片保存失败，请检查路径或权限。")
 
+    # ------------------------------------------------------------------ Persistence
+
     def _save_to_file(self):
         if self.model.length == 0:
-            QMessageBox.information(self, "Save Linked List", "当前链表为空，无需保存。")
+            QMessageBox.information(self, "Save Doubly Linked List", "当前链表为空，无需保存。")
             return
 
-        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "linklist"
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "doublyll"
         base_dir.mkdir(parents=True, exist_ok=True)
-        suggested = str(base_dir / "linked_list.json")
+        suggested = str(base_dir / "doubly_linked_list.json")
 
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Linked List",
+            "Save Doubly Linked List",
             suggested,
             "Linked List (*.json);;All Files (*)",
         )
@@ -115,8 +120,8 @@ class LinkedListController(QWidget):
         payload = {
             "schema": "pyqt_ds_visualizer",
             "version": 1,
-            "structure": "linked_list",
-            "nodes": self.model.snapshot(),
+            "structure": "doubly_linked_list",
+            "nodes": self.model.snapshot(include_links=True),
         }
 
         try:
@@ -126,15 +131,15 @@ class LinkedListController(QWidget):
             QMessageBox.critical(self, "Save Failed", f"无法写入文件：\n{exc}")
             return
 
-        QMessageBox.information(self, "Save Linked List", f"已保存到：\n{path}")
+        QMessageBox.information(self, "Save Doubly Linked List", f"已保存到：\n{path}")
 
     def _load_from_file(self):
-        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "linklist"
+        base_dir = Path(__file__).resolve().parents[1] / "save_file" / "doublyll"
         base_dir.mkdir(parents=True, exist_ok=True)
 
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open Linked List",
+            "Open Doubly Linked List",
             str(base_dir),
             "Linked List (*.json);;All Files (*)",
         )
@@ -150,14 +155,17 @@ class LinkedListController(QWidget):
 
         if (
             payload.get("schema") != "pyqt_ds_visualizer"
-            or payload.get("structure") != "linked_list"
+            or payload.get("structure") not in {"doubly_linked_list", "linked_list"}
         ):
             QMessageBox.critical(self, "Open Failed", "文件格式不受支持。")
             return
 
         nodes = payload.get("nodes", [])
-        values = [node.get("value") for node in nodes]
+        if not isinstance(nodes, list):
+            QMessageBox.critical(self, "Open Failed", "文件内容无效。")
+            return
 
+        values = [node.get("value") for node in nodes]
         self.model.create_from_iterable(values)
         snapshot = self.model.snapshot()
         if snapshot:
@@ -166,7 +174,7 @@ class LinkedListController(QWidget):
             self.view.reset()
         self._refresh_spins()
 
-    # ---------- Panel UI ----------
+    # ------------------------------------------------------------------ Panel UI
 
     def _create_panel(self):
         container = QWidget()
@@ -177,19 +185,16 @@ class LinkedListController(QWidget):
         layout.setColumnStretch(0, 1)
         layout.setColumnStretch(1, 1)
 
-        # Create From List
         create_btn = QPushButton("Create From List")
         create_btn.clicked.connect(self._on_create)
         create_group = self._single_button_group("Create", create_btn)
         layout.addWidget(create_group, 0, 0)
 
-        # Append Tail
         append_btn = QPushButton("Append Tail")
         append_btn.clicked.connect(self._on_append_tail)
         append_group = self._single_button_group("Append Tail", append_btn)
         layout.addWidget(append_group, 1, 0)
 
-        # Insert controls
         insert_group = QGroupBox("Insert At")
         insert_group.setStyleSheet("QGroupBox { color: white; }")
         insert_layout = QFormLayout()
@@ -203,7 +208,6 @@ class LinkedListController(QWidget):
         insert_group.setLayout(insert_layout)
         layout.addWidget(insert_group, 2, 0)
 
-        # Update controls（布局与 arr_ctrl 相同）
         update_group = QGroupBox("Update")
         update_group.setStyleSheet("QGroupBox { color: white; }")
         update_layout = QFormLayout()
@@ -217,7 +221,6 @@ class LinkedListController(QWidget):
         update_group.setLayout(update_layout)
         layout.addWidget(update_group, 0, 1, 2, 1)
 
-        # Delete controls
         delete_group = QGroupBox("Delete At")
         delete_group.setStyleSheet("QGroupBox { color: white; }")
         delete_layout = QFormLayout()
@@ -291,7 +294,7 @@ class LinkedListController(QWidget):
             self.update_value_edit.setDisabled(not has_nodes)
             self.update_btn.setDisabled(not has_nodes)
 
-    # ---------- Controller lifecycle ----------
+    # ------------------------------------------------------------------ Controller lifecycle
 
     def on_activate(self, graphics_view):
         self.view.bind_canvas(graphics_view)
@@ -303,11 +306,11 @@ class LinkedListController(QWidget):
     def build_panel(self):
         return self.panel
 
-    # ---------- UI handlers ----------
+    # ------------------------------------------------------------------ UI handlers
 
     def _on_create(self):
         text, ok = QInputDialog.getText(
-            self, "Create Linked List", "Enter values (comma-separated):"
+            self, "Create Doubly Linked List", "Enter values (comma-separated):"
         )
         if not ok:
             return
@@ -328,22 +331,20 @@ class LinkedListController(QWidget):
             return
         value_text = text.strip() or "∅"
         value = self._coerce_value(value_text)
-        index = self.model.length  # 尾部位置
+        index = self.model.length
         inserted_id = self.model.insert(index, value)
         snapshot = self.model.snapshot()
         self.view.animate_insert(snapshot, inserted_id, index)
         self._refresh_spins()
 
     def _on_insert(self):
-        index = self.insert_index_spin.value()                  # 获取SpinBox的索引值
-        value_text = self.insert_value_edit.text().strip()      # 获取输入框的值
-        if not value_text:
-            value_text = "∅"
-        value = self._coerce_value(value_text)                  # 转换为int/float/str类型
-        inserted_id = self.model.insert(index, value)           # ①调用模型层的插入方法
+        index = self.insert_index_spin.value()
+        value_text = self.insert_value_edit.text().strip() or "∅"
+        value = self._coerce_value(value_text)
+        inserted_id = self.model.insert(index, value)
         snapshot = self.model.snapshot()
-        self.view.animate_insert(snapshot, inserted_id, index)  # ②调用视图层的绘制动画
-        self._refresh_spins()                                   # ③刷新UI控件状态
+        self.view.animate_insert(snapshot, inserted_id, index)
+        self._refresh_spins()
 
     def _on_update_value(self):
         if self.model.length == 0:
@@ -358,11 +359,11 @@ class LinkedListController(QWidget):
     def _on_delete(self):
         if self.model.length == 0:
             return
-        index = self.delete_index_spin.value()                      # 获取SpinBox的索引值
-        removed = self.model.delete(index)                          # 1. 模型层删除
+        index = self.delete_index_spin.value()
+        removed = self.model.delete(index)
         snapshot = self.model.snapshot()
-        self.view.animate_delete(snapshot, removed["id"], index)    # 2. 视图动画
-        self._refresh_spins()                                       # 3. 刷新UI控件状态
+        self.view.animate_delete(snapshot, removed["id"], index)
+        self._refresh_spins()
 
     def _handle_delete_from_node(self, index):
         self.delete_index_spin.setValue(index)
@@ -408,7 +409,7 @@ class LinkedListController(QWidget):
         self.view.reset()
         self._refresh_spins()
 
-    # ---------- Helpers ----------
+    # ------------------------------------------------------------------ Helpers
 
     @staticmethod
     def _parse_sequence(text: str):
@@ -422,7 +423,7 @@ class LinkedListController(QWidget):
         ]
         if not tokens:
             return []
-        return [LinkedListController._coerce_value(part) for part in tokens]
+        return [DoublyLinkedListController._coerce_value(part) for part in tokens]
 
     @staticmethod
     def _coerce_value(value):

@@ -31,6 +31,7 @@ from stack.st_ctrl import StackController
 from bst.bst_ctrl import BSTController
 from bst.avl_ctrl import AVLController
 from huffman.huff_ctrl import HuffmanController
+from double_ll.dl_ctrl import DoublyLinkedListController
 
 # ---------- LLM 配置信息（DeepSeek API） ----------
 load_dotenv()
@@ -106,10 +107,25 @@ class MainWindow(QMainWindow):
                 "FIND 7\n"
                 "CLEAR"
             ),
+            "AVL": (  # 新增
+                "CREATE [10, 20, 30]\n"
+                "INSERT 25\n"
+                "DELETE 10\n"
+                "FIND 30\n"
+                "CLEAR"
+            ),
             "Huffman": (
                 "INIT A:5, B:2, C:1\n"
                 "STEP\n"
                 "RESET"
+            ),
+            "Doubly Linked List": (
+                "CREATE [1, 2, 3]\n"
+                "APPEND 5\n"
+                "INSERT 1 42\n"
+                "UPDATE 2 99\n"
+                "DELETE 0\n"
+                "CLEAR"
             ),
         }
 
@@ -227,13 +243,15 @@ class MainWindow(QMainWindow):
         bst = BSTController(self.global_ctrl)
         huffman = HuffmanController(self.global_ctrl)
         avl = AVLController(self.global_ctrl)
+        dll = DoublyLinkedListController(self.global_ctrl)
 
         self._add_controller("Linked List", linked_list)
+        self._add_controller("Doubly Linked List", dll)
         self._add_controller("Stack", stack)
         self._add_controller("Array", array)
         self._add_controller("BST", bst)
-        self._add_controller("Huffman", huffman)
         self._add_controller("AVL", avl)
+        self._add_controller("Huffman", huffman)
 
     def _add_controller(self, name, controller):
         panel = controller.build_panel()
@@ -271,6 +289,8 @@ class MainWindow(QMainWindow):
         if self._active_name:
             prev = self._controllers[self._active_name]
             prev.on_deactivate()
+        # 切换控制器时，清空编辑器内容
+        self.editor.clear()
 
         controller = self._controllers[name]
         controller.on_activate(self.graphics_view)

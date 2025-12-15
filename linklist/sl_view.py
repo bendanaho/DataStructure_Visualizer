@@ -1280,6 +1280,7 @@ class ArrowItem(QGraphicsPathItem):
 class LinkedListViewWithPersistence(LinkedListView):
     saveRequested = pyqtSignal()
     loadRequested = pyqtSignal()
+    saveImageRequested = pyqtSignal()  # [新增] 定义保存图片的信号
 
     def _show_background_menu(self, screen_pos):
         if isinstance(screen_pos, QPointF):
@@ -1288,6 +1289,7 @@ class LinkedListViewWithPersistence(LinkedListView):
         menu = QMenu()
         open_action = menu.addAction("Open From File…")
         save_action = menu.addAction("Save To File…")
+        save_img_action = menu.addAction("Save as Image…")  # [新增] 菜单项
         menu.addSeparator()
         clear_action = menu.addAction("Clear All")
 
@@ -1297,5 +1299,7 @@ class LinkedListViewWithPersistence(LinkedListView):
             self.loadRequested.emit()
         elif chosen == save_action:
             self.saveRequested.emit()
+        elif chosen == save_img_action:
+            self.saveImageRequested.emit()  # [新增] 触发信号
         elif chosen == clear_action:
             self.clearAllRequested.emit()

@@ -1,5 +1,6 @@
 import re
-
+from PyQt5.QtGui import QImage, QPainter
+from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtWidgets import (
     QFormLayout,
     QGridLayout,
@@ -43,8 +44,56 @@ class ArrayController(QWidget):
         self.view.clearAllRequested.connect(self._on_clear_all_requested)
         self.view.saveRequested.connect(self._save_to_file)
         self.view.loadRequested.connect(self._load_from_file)
+        self.view.saveImageRequested.connect(self._save_as_image)  # [新增] 连接图片保存信号
 
         self._refresh_spins()
+
+    # [新增] 保存为图片的方法
+    def _save_as_image(self):
+        if self.model.length == 0:
+            QMessageBox.information(self, "Save Image", "当前画布为空，无需保存。")
+            return
+
+        # 1. 确定保存目录
+        base_dir = Path(__file__).resolve().parents[1] / "save_as_photo" / "array"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "array_snapshot.png")
+
+        # 2. 弹出文件选择框
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save as Image",
+            suggested,
+            "Images (*.png *.jpg *.bmp);;All Files (*)",
+        )
+        if not path:
+            return
+
+        # 3. 获取场景边界并渲染
+        scene = self.view.scene
+        # 获取所有图元的边界矩形
+        content_rect = scene.itemsBoundingRect()
+        # 增加一些内边距 (Padding)
+        padding = 20
+        target_rect = content_rect.adjusted(-padding, -padding, padding, padding)
+
+        # 创建 QImage
+        image = QImage(target_rect.size().toSize(), QImage.Format_ARGB32)
+        image.fill(Qt.white)  # 填充白色背景
+
+        # 使用 QPainter 渲染场景
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        # 将场景的 target_rect 区域渲染到 image 上
+        scene.render(painter, target=QRectF(image.rect()), source=target_rect)
+        painter.end()
+
+        # 4. 保存文件
+        if image.save(path):
+            QMessageBox.information(self, "Save Image", f"图片已保存至：\n{path}")
+        else:
+            QMessageBox.critical(self, "Save Image", "图片保存失败，请检查路径或权限。")
 
     def _save_to_file(self):
         snapshot = self.model.snapshot()

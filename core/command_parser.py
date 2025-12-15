@@ -19,7 +19,7 @@ if TYPE_CHECKING:  # 避免运行时循环导入
 
 DSL_SPEC = """
 语法：<STRUCTURE> <ACTION> [ARGS]
-  STRUCTURE ∈ {ARRAY, LINKED_LIST, STACK, BST, HUFFMAN, CURRENT}
+STRUCTURE ∈ {ARRAY, LINKED_LIST, DOUBLY_LINKED_LIST, STACK, BST, AVL, HUFFMAN, CURRENT}
   | CURRENT 代表当前激活的结构。
   ACTION（大小写不敏感）：
     ARRAY:
@@ -29,7 +29,7 @@ DSL_SPEC = """
       UPDATE <index> <value>
       DELETE <index>
       CLEAR
-    LINKED_LIST:
+    LINKED_LIST / DOUBLY_LINKED_LIST:
       CREATE <list>
       APPEND <value>
       INSERT <index> <value>
@@ -41,6 +41,12 @@ DSL_SPEC = """
       POP [count]          # count 省略时默认 1
       CLEAR
     BST:
+      CREATE <numeric_list>
+      INSERT <number>
+      DELETE <number>
+      FIND <number>
+      CLEAR
+    AVL:
       CREATE <numeric_list>
       INSERT <number>
       DELETE <number>
@@ -87,17 +93,26 @@ class CommandParser:
             "LINKLIST": "Linked List",
             "LL": "Linked List",
             "LIST": "Linked List",
+            "DOUBLY_LINKED_LIST": "Doubly Linked List",
+            "DOUBLE_LINKED_LIST": "Doubly Linked List",
+            "DLL": "Doubly Linked List",
+            "DLIST": "Doubly Linked List",
+            "D_LINKED_LIST": "Doubly Linked List",
             "STACK": "Stack",
             "BST": "BST",
             "TREE": "BST",
+            "AVL": "AVL",          # 新增
+            "AVL_TREE": "AVL",     # 新增
             "HUFFMAN": "Huffman",
             "HUFF": "Huffman",
         }
         self._handlers = {
             "Array": self._handle_array,
             "Linked List": self._handle_linked_list,
+            "Doubly Linked List": self._handle_doubly_linked_list,
             "Stack": self._handle_stack,
             "BST": self._handle_bst,
+            "AVL": self._handle_avl,  # 新增
             "Huffman": self._handle_huffman,
         }
 
@@ -622,6 +637,122 @@ class CommandParser:
             return False, "当前无可合并的节点。"
 
         raise CommandExecutionError("请先执行 INIT 指令。")
+
+    # ---------- Doubly Linked List ----------
+
+    def _handle_doubly_linked_list(self, controller, action: str, args: str) -> Tuple[str, Any]:
+        model = controller.model
+        view = controller.view
+
+        if action == "CREATE":
+            values = self._parse_list_argument(args, allow_empty=False)
+            model.create_from_iterable(values)
+            snapshot = model.snapshot()
+            if snapshot:
+                view.animate_build(snapshot)
+            else:
+                view.reset()
+            controller._refresh_spins()
+            return f"创建长度 {model.length} 的双向链表。", view
+
+        if action == "APPEND":
+            value = self._coerce_value(args.strip())
+            index = model.length
+            inserted_id = model.insert(index, value)
+            snapshot = model.snapshot()
+            view.animate_insert(snapshot, inserted_id, index)
+            controller._refresh_spins()
+            return "尾插一个双向链表节点。", view
+
+        if action == "INSERT":
+            index, value = self._parse_index_and_value(args)
+            if not 0 <= index <= model.length:
+                raise CommandExecutionError("插入索引超出范围。")
+            inserted_id = model.insert(index, value)
+            snapshot = model.snapshot()
+            view.animate_insert(snapshot, inserted_id, index)
+            controller._refresh_spins()
+            return f"在索引 {index} 插入双向链表节点。", view
+
+        if action == "UPDATE":
+            index, value = self._parse_index_and_value(args)
+            if not 0 <= index < model.length:
+                raise CommandExecutionError("更新索引超出范围。")
+            model.update_value(index, value)
+            view.update_values(model.snapshot())
+            controller._refresh_spins()
+            return f"更新索引 {index} 的双向链表节点值。", view
+
+        if action == "DELETE":
+            index = self._parse_index_only(args)
+            if not 0 <= index < model.length:
+                raise CommandExecutionError("删除索引超出范围。")
+            removed = model.delete(index)
+            snapshot = model.snapshot()
+            view.animate_delete(snapshot, removed["id"], index)
+            controller._refresh_spins()
+            return f"删除索引 {index} 的双向链表节点。", view
+
+        if action == "CLEAR":
+            model.clear()
+            view.reset()
+            controller._refresh_spins()
+            return "双向链表已清空。", view
+
+        raise CommandSyntaxError(f"Doubly Linked List 不支持动作：{action}")
+
+    def _handle_avl(self, controller, action: str, args: str) -> Tuple[str, Any]:
+        model = controller.model
+        view = controller.view
+
+        if action == "CREATE":
+            values = self._parse_list_argument(args, allow_empty=False, require_numeric=True)
+            model.create_from_iterable(values)
+            snapshot = model.snapshot()
+            if snapshot["nodes"]:
+                view.animate_build(snapshot)
+            else:
+                view.reset()
+            controller._refresh_inputs()
+            return f"创建包含 {len(values)} 个元素的 AVL 树。", view
+
+        if action == "INSERT":
+            value = self._coerce_numeric(args.strip())
+            # AVL Model 的 insert 返回包含 steps 的字典
+            result = model.insert(value)
+            view.animate_operation_steps(result["steps"])
+            controller._refresh_inputs()
+
+            msg = f"插入节点值 {value}。"
+            if result["status"] == "duplicate":
+                msg += " (重复值)"
+            return msg, view
+
+        if action == "DELETE":
+            value = self._coerce_numeric(args.strip())
+            # AVL Model 的 delete 返回包含 steps 的字典
+            result = model.delete(value)
+            view.animate_operation_steps(result["steps"])
+            controller._refresh_inputs()
+
+            if result["status"] == "not_found":
+                return f"未找到节点 {value}，无法删除。", view
+            return f"删除节点值 {value}。", view
+
+        if action == "FIND":
+            value = self._coerce_numeric(args.strip())
+            found_id, path = model.find(value)
+            snapshot = model.snapshot()
+            view.animate_find(snapshot, found_id, path)
+            return "查找操作已完成。", view
+
+        if action == "CLEAR":
+            model.clear()
+            view.reset()
+            controller._refresh_inputs()
+            return "AVL 树已清空。", view
+
+        raise CommandSyntaxError(f"AVL 不支持动作：{action}")
 
     # ---------- 解析辅助 ----------
 

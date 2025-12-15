@@ -1,10 +1,9 @@
 import json
-import re
 from pathlib import Path
 from typing import Optional
-
+from PyQt5.QtGui import QImage, QPainter
+from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtWidgets import (
-    QFileDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -14,6 +13,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QFileDialog,
 )
 
 from core.global_ctrl import GlobalController
@@ -23,7 +23,7 @@ from bst.avl_view import AVLViewWithPersistence
 
 class AVLController(QWidget):
     """
-    构建 AVL 操作面板，并负责模型与视图之间的桥接。
+    AVL 操作面板，复用 BST UI 结构，但使用新的模型与视图。
     """
 
     def __init__(self, global_ctrl: GlobalController):
@@ -41,8 +41,59 @@ class AVLController(QWidget):
         self.view.clearAllRequested.connect(self._on_clear_all_requested)
         self.view.saveRequested.connect(self._save_to_file)
         self.view.loadRequested.connect(self._load_from_file)
+        self.view.saveImageRequested.connect(self._save_as_image)  # [新增] 连接图片保存信号
 
         self._refresh_inputs()
+
+    # [新增] 保存为图片的方法
+    def _save_as_image(self):
+        if self.model.length == 0:
+            QMessageBox.information(self, "Save Image", "当前树为空，无需保存。")
+            return
+
+        # 1. 确定保存目录
+        base_dir = Path(__file__).resolve().parents[1] / "save_as_photo" / "avl"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        suggested = str(base_dir / "avl_snapshot.png")
+
+        # 2. 弹出文件选择框
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save as Image",
+            suggested,
+            "Images (*.png *.jpg *.bmp);;All Files (*)",
+        )
+        if not path:
+            return
+
+        # 3. 获取场景边界并渲染
+        scene = self.view.scene
+        content_rect = scene.itemsBoundingRect()
+
+        if content_rect.isNull():
+            content_rect = QRectF(0, 0, 800, 600)
+
+        padding = 40
+        target_rect = content_rect.adjusted(-padding, -padding, padding, padding)
+
+        image = QImage(target_rect.size().toSize(), QImage.Format_ARGB32)
+        image.fill(Qt.white)
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        scene.render(painter, target=QRectF(image.rect()), source=target_rect)
+        painter.end()
+
+        # 4. 保存文件
+        if image.save(path):
+            QMessageBox.information(self, "Save Image", f"图片已保存至：\n{path}")
+        else:
+            QMessageBox.critical(self, "Save Image", "图片保存失败，请检查路径或权限。")
+
+    # ---------- 文件持久化 ----------
 
     def _save_to_file(self):
         snapshot = self.model.snapshot()
@@ -103,7 +154,7 @@ class AVLController(QWidget):
 
         if (
             payload.get("schema") != "pyqt_ds_visualizer"
-            or payload.get("structure") != "avl"
+            or payload.get("structure") not in {"avl", "bst"}
             or "snapshot" not in payload
         ):
             QMessageBox.critical(self, "Open Failed", "文件格式不受支持。")
@@ -119,6 +170,8 @@ class AVLController(QWidget):
 
         self._refresh_inputs()
         QMessageBox.information(self, "AVL", "文件加载完成。")
+
+    # ---------- UI 构建 ----------
 
     def _build_inputs(self):
         self.insert_value_edit = QLineEdit()
@@ -144,7 +197,8 @@ class AVLController(QWidget):
 
         create_btn = QPushButton("Create From List")
         create_btn.clicked.connect(self._on_create)
-        layout.addWidget(self._single_button_group("Create", create_btn), 0, 0)
+        create_group = self._single_button_group("Create", create_btn)
+        layout.addWidget(create_group, 0, 0)
 
         insert_group = QGroupBox("Insert")
         insert_group.setStyleSheet("QGroupBox { color: white; }")
@@ -204,12 +258,16 @@ class AVLController(QWidget):
     def build_panel(self):
         return self.panel
 
+    # ---------- 生命周期 ----------
+
     def on_activate(self, graphics_view):
         self.view.bind_canvas(graphics_view)
         graphics_view.setScene(self.view.scene)
 
     def on_deactivate(self):
         pass
+
+    # ---------- 操作回调 ----------
 
     def _require_value(self, edit: QLineEdit, action: str) -> Optional[str]:
         raw = edit.text().strip()
@@ -247,9 +305,11 @@ class AVLController(QWidget):
         value = self._coerce_numeric_or_warn(raw, "插入")
         if value is None:
             return
-        inserted_id, path = self.model.insert(value)
-        snapshot = self.model.snapshot()
-        self.view.animate_insert(snapshot, inserted_id, path)
+
+        result = self.model.insert(value)
+        self.view.animate_operation_steps(result["steps"])
+        if result["status"] == "duplicate":
+            QMessageBox.information(self, "AVL", "该值已存在。")
         self._refresh_inputs()
 
     def _on_delete(self):
@@ -261,12 +321,11 @@ class AVLController(QWidget):
         value = self._coerce_numeric_or_warn(raw, "删除")
         if value is None:
             return
-        removed_id, path = self.model.delete(value)
-        snapshot = self.model.snapshot()
-        if removed_id is None:
-            self.view.animate_find(snapshot, None, path)
-        else:
-            self.view.animate_delete(snapshot, removed_id, path)
+
+        result = self.model.delete(value)
+        self.view.animate_operation_steps(result["steps"])
+        if result["status"] == "not_found":
+            QMessageBox.information(self, "AVL", "未找到目标值。")
         self._refresh_inputs()
 
     def _on_find(self):
@@ -282,12 +341,7 @@ class AVLController(QWidget):
         snapshot = self.model.snapshot()
         self.view.animate_find(snapshot, found_id, path)
 
-    def _coerce_numeric_or_warn(self, raw: str, action: str):
-        try:
-            return self._coerce_value(raw)
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Value", f"{action}的值必须是数值（整数或小数）。")
-            return None
+    # ---------- 视图事件 ----------
 
     def _handle_delete_from_view(self, node_id):
         value = self.model.value_of(node_id)
@@ -308,6 +362,8 @@ class AVLController(QWidget):
         self.view.reset()
         self._refresh_inputs()
 
+    # ---------- 状态管理 ----------
+
     def _refresh_inputs(self):
         has_nodes = self.model.length > 0
         state = self._panel_locked
@@ -327,8 +383,12 @@ class AVLController(QWidget):
         self._panel_locked = locked
         self._refresh_inputs()
 
+    # ---------- Helpers ----------
+
     @staticmethod
     def _parse_sequence(text: str):
+        import re
+
         if not text:
             return []
         normalized = text.replace("，", ",")
@@ -351,3 +411,10 @@ class AVLController(QWidget):
             return float(value)
         except ValueError:
             raise ValueError("value is not numeric")
+
+    def _coerce_numeric_or_warn(self, raw: str, action: str):
+        try:
+            return self._coerce_value(raw)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Value", f"{action}的值必须是数值（整数或小数）。")
+            return None
