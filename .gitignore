@@ -1,6 +1,7 @@
 .idea/
 .venv/
 __pycache__/
+original_prompt.txt
 prompt.txt
 TODO.txt
 save_file/
